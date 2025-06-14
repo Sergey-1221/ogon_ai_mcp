@@ -140,19 +140,19 @@ state.setdefault("chat",     [])        # [(role, text)]
 # ══════════════════════════════════════════════════════════════════
 PAGES = ["💬 Chat", "🔄 Convert", "🗂 Projects", "⚙️ API Setup"]
 state.setdefault("page", PAGES[0])
-for p in PAGES:
-    if st.sidebar.button(p, key=f"nav_{p}",
-                         type="primary" if state["page"] == p else "secondary",
-                         use_container_width=True):
-        state["page"] = p
-        rerun()
+with st.sidebar:
+    for p in PAGES:
+        if st.button(p, key=f"nav_{p}",
+                     type="primary" if state["page"] == p else "secondary",
+                     use_container_width=True):
+            state["page"] = p
+            rerun()
+    st.divider()
+    if state.get("proj_sel"):
+        st.success(f"Проект: {state['proj_sel']}")
+    else:
+        st.info("Проект не выбран")
 page = state["page"]
-
-# highlight selected project
-if state.get("proj_sel"):
-    st.sidebar.success(f"Проект: {state['proj_sel']}")
-else:
-    st.sidebar.info("Проект не выбран")
 
 # ───────────────────────────────────────────────────── Projects ───
 if page == "🗂 Projects":
@@ -167,19 +167,19 @@ if page == "🗂 Projects":
 
     project = {"name": "", "openai": OPENAI_ENV, "apis": {}} \
               if creating_new else state["projects"][chosen]
-    project["name"] = st.text_input("Название проекта", project["name"])
-    project["openai"] = st.text_input("OpenAI API-ключ",
-                                      project["openai"], type="password",
-                                      help="Пусто → берётся из .env")
-
-    if st.button("💾 Сохранить проект", type="primary",
-                 use_container_width=True):
-        if not project["name"]:
-            st.warning("Имя проекта обязательно.")
-        else:
-            state["projects"][project["name"]] = project
-            state["proj_sel"] = project["name"]
-            rerun()
+    with st.form("proj_form"):
+        project["name"] = st.text_input("Название проекта", project["name"])
+        project["openai"] = st.text_input("OpenAI API-ключ",
+                                          project["openai"], type="password",
+                                          help="Пусто → берётся из .env")
+        if st.form_submit_button("💾 Сохранить проект", type="primary",
+                                use_container_width=True):
+            if not project["name"]:
+                st.warning("Имя проекта обязательно.")
+            else:
+                state["projects"][project["name"]] = project
+                state["proj_sel"] = project["name"]
+                rerun()
 
     if not creating_new:
         st.divider()
@@ -210,24 +210,25 @@ elif page == "⚙️ API Setup":
            "spec": None, "enabled": {}, "thread": None, "logs": []} \
           if creating_api else project["apis"][chosen_api]
 
-    col1, col2 = st.columns(2)
-    with col1:
-        api["name"] = st.text_input("API-имя", api["name"])
-        api["url"]  = st.text_input("URL спецификации", api["url"])
-        api["port"] = st.number_input("Порт MCP", 1024, 65535, api["port"])
-    with col2:
-        api["header_name"] = st.text_input("Auth header", api["header_name"])
-        api["header_val"]  = st.text_input("Header value", api["header_val"])
-        api["query_name"]  = st.text_input("Auth query", api["query_name"])
-        api["query_val"]   = st.text_input("Query value", api["query_val"])
+    with st.form("api_form"):
+        col1, col2 = st.columns(2)
+        with col1:
+            api["name"] = st.text_input("API-имя", api["name"])
+            api["url"]  = st.text_input("URL спецификации", api["url"])
+            api["port"] = st.number_input("Порт MCP", 1024, 65535, api["port"])
+        with col2:
+            api["header_name"] = st.text_input("Auth header", api["header_name"])
+            api["header_val"]  = st.text_input("Header value", api["header_val"])
+            api["query_name"]  = st.text_input("Auth query", api["query_name"])
+            api["query_val"]   = st.text_input("Query value", api["query_val"])
 
-    if st.button("💾 Сохранить API", type="primary", use_container_width=True):
-        if not api["name"] or not api["url"]:
-            st.warning("Заполните имя и URL спецификации.")
-        else:
-            project["apis"][api["name"]] = api
-            state["api_sel"] = api["name"]
-            rerun()
+        if st.form_submit_button("💾 Сохранить API", type="primary", use_container_width=True):
+            if not api["name"] or not api["url"]:
+                st.warning("Заполните имя и URL спецификации.")
+            else:
+                project["apis"][api["name"]] = api
+                state["api_sel"] = api["name"]
+                rerun()
 
     # отображаем короткие логи выбранного профиля
     if not creating_api:
@@ -259,7 +260,6 @@ elif page == "🔄 Convert":
 
         gpt_describe(spec, project["openai"])
         api["spec"] = spec
-        # сформировать enabled map, если пусто
         eps = {(p, m.lower()) for p, v in spec["paths"].items() for m in v}
         if not api["enabled"]:
             api["enabled"] = {f"{m} {p}": True for (p, m) in eps}
@@ -269,17 +269,20 @@ elif page == "🔄 Convert":
     # 2. Выбор эндпоинтов
     if api.get("spec"):
         st.subheader("Включить/отключить эндпоинты")
-        cols = st.columns(2)
-        for i, (p, meths) in enumerate(api["spec"]["paths"].items()):
-            for m in meths:
-                key = f"{m} {p}"
-                with cols[i % 2]:
-                    api["enabled"][key] = st.checkbox(
-                        key, value=api["enabled"][key])
+        with st.form("mcp_form"):
+            cols = st.columns(2)
+            for i, (p, meths) in enumerate(api["spec"]["paths"].items()):
+                for m in meths:
+                    key = f"{m} {p}"
+                    with cols[i % 2]:
+                        api["enabled"][key] = st.checkbox(
+                            key, value=api["enabled"][key])
 
-        # 3. Запуск MCP
-        if st.button("🚀 Запустить / Перезапустить MCP", type="primary",
-                     use_container_width=True):
+            run_mcp = st.form_submit_button("🚀 Запустить / Перезапустить MCP",
+                                           type="primary",
+                                           use_container_width=True)
+
+        if run_mcp:
             allowed = {(p, m.lower()) for p, m in
                        [k.split(" ", 1)[::-1]
                         for k, v in api["enabled"].items() if v]}
