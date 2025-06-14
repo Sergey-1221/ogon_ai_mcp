@@ -13,22 +13,20 @@ REST → MCP DASHBOARD  •  v2025-06
 
 2. 🔄 CONVERT
    ───────────
-   • Загрузка Swagger/OpenAPI (JSON или YAML) по URL.
-   • (Опц.) GPT-генерация описаний эндпоинтов.
-   • Галочки для включения/исключения методов.
-   • Запуск/перезапуск локального MCP-сервера на выбранном порту.
+   • Подсказка о том, что загрузка спецификации теперь в «API Setup»,
+     а запуск MCP перенесён в «Chat».
 
 3. 🗂 PROJECTS
    ───────────
    • Создание/удаление проектов.  В каждом проекте — один OpenAI-ключ.
-   • Перечень всех API-профилей проекта и их текущий статус
+   • Подключение нужных API-профилей из глобального каталога и их статус
      («✅ запущен» или «⏹ остановлен»).
 
 4. ⚙️ API SETUP
    ─────────────
-   • Добавление/редактирование API-профиля (URL, порт, auth-заголовки
-     или query-ключ, имя).  Профиль хранит также spec, enabled-map,
-     тред сервера и логи.
+   • Управление глобальным каталогом API-профилей (URL, порт, auth-
+     заголовки или query-ключ, имя). Профиль хранит также spec,
+     enabled-map, тред сервера и логи.
 
 ---------------------------------------------------------------------
 Зависимости  (requirements.txt):
@@ -132,10 +130,8 @@ def make_http_client(base: str, headers: Dict, qparams: Dict, logger):
     )
 
 
-def log_line(project: dict, api_name: str, msg: str):
-    project["apis"][api_name].setdefault("logs", []).append(
-        f"{time.strftime('%H:%M:%S')}  {msg}"
-    )
+def log_line(api: dict, msg: str):
+    api.setdefault("logs", []).append(f"{time.strftime('%H:%M:%S')}  {msg}")
 
 
 # Каталог заранее известных API-профилей
@@ -147,9 +143,8 @@ PREDEFINED_APIS = {
 }
 
 
-def start_mcp(project: dict, api_name: str):
+def start_mcp(api: dict):
     """Запустить FastMCP для указанного профиля."""
-    api = project["apis"][api_name]
     if not api.get("spec"):
         raise RuntimeError("Spec not loaded")
 
@@ -163,20 +158,18 @@ def start_mcp(project: dict, api_name: str):
     headers = {api["header_name"]: api["header_val"]} if api["header_name"] else {}
     qparams = {api["query_name"]: api["query_val"]} if api["query_name"] else {}
 
-    client = make_http_client(
-        base, headers, qparams, lambda m: log_line(project, api_name, m)
-    )
+    client = make_http_client(base, headers, qparams, lambda m: log_line(api, m))
 
     mcp = FastMCP.from_openapi(
         spec_filtered,
         client,
-        name=f"{project['name']}_{api_name}",
+        name=api["name"],
         host="0.0.0.0",
         port=api["port"],
     )
 
     def run_server():
-        log_line(project, api_name, f"🚀 MCP start :{api['port']}")
+        log_line(api, f"🚀 MCP start :{api['port']}")
         mcp.run()
 
     t = threading.Thread(target=run_server, daemon=True)
@@ -195,6 +188,7 @@ st.set_page_config(page_title="REST → MCP", layout="wide")
 
 state = st.session_state
 state.setdefault("projects", {})  # name → project-dict
+state.setdefault("api_catalog", {})  # глобальные API-профили
 state.setdefault("proj_sel", None)  # выбранный проект
 state.setdefault("api_sel", None)  # выбранный API-профиль
 state.setdefault("chat", [])  # [(role, text)]
@@ -238,7 +232,7 @@ if page == "🗂 Projects":
     creating_new = chosen == "< создать >"
 
     project = (
-        {"name": "", "openai": OPENAI_ENV, "apis": {}}
+        {"name": "", "openai": OPENAI_ENV, "apis": []}
         if creating_new
         else state["projects"][chosen]
     )
@@ -262,8 +256,25 @@ if page == "🗂 Projects":
 
     if not creating_new:
         st.divider()
-        st.subheader("API-профили в проекте")
-        for api_name, cfg in project["apis"].items():
+        st.subheader("Подключить API-профили")
+        sel = st.multiselect(
+            "Доступные профили",
+            list(state["api_catalog"]),
+            default=project.get("apis", []),
+            key="proj_api_ms",
+        )
+        if st.button(
+            "💾 Сохранить список", key="proj_api_save", use_container_width=True
+        ):
+            project["apis"] = sel
+            state["projects"][project["name"]] = project
+            rerun()
+
+        st.subheader("Текущие профили")
+        for api_name in project.get("apis", []):
+            cfg = state["api_catalog"].get(api_name)
+            if not cfg:
+                continue
             running = cfg.get("thread") and cfg["thread"].is_alive()
             badge = "✅" if running else "⏹"
             st.write(f"{badge} **{api_name}**  —  {cfg['url']}  (:{cfg['port']})")
@@ -271,17 +282,12 @@ if page == "🗂 Projects":
 # ───────────────────────────────────────────────────── API Setup ──
 elif page == "⚙️ API Setup":
     st.header("⚙️ Настройка API-профиля")
-    if not state["proj_sel"]:
-        st.info("Создайте/выберите проект во вкладке «Projects».")
-        st.stop()
 
-    project = state["projects"][state["proj_sel"]]
-
-    st.subheader("Каталог готовых API")
-    predef = st.selectbox("Добавить профиль", ["< выбрать >"] + list(PREDEFINED_APIS))
+    st.subheader("Добавить из каталога")
+    predef = st.selectbox("Профиль", ["< выбрать >"] + list(PREDEFINED_APIS))
     if predef != "< выбрать >" and st.button("➕ Добавить", key="add_predef"):
         cfg = PREDEFINED_APIS[predef]
-        project["apis"][predef] = {
+        state["api_catalog"][predef] = {
             "name": predef,
             "url": cfg["url"],
             "port": cfg.get("port", 8000),
@@ -297,7 +303,7 @@ elif page == "⚙️ API Setup":
         state["api_sel"] = predef
         rerun()
 
-    api_names = list(project["apis"])
+    api_names = list(state["api_catalog"])
     chosen_api = st.selectbox(
         "API-профиль",
         ["< создать >"] + api_names,
@@ -324,7 +330,7 @@ elif page == "⚙️ API Setup":
             "logs": [],
         }
         if creating_api
-        else project["apis"][chosen_api]
+        else state["api_catalog"][chosen_api]
     )
 
     with st.form("api_form"):
@@ -345,7 +351,7 @@ elif page == "⚙️ API Setup":
             if not api["name"] or not api["url"]:
                 st.warning("Заполните имя и URL спецификации.")
             else:
-                project["apis"][api["name"]] = api
+                state["api_catalog"][api["name"]] = api
                 state["api_sel"] = api["name"]
                 rerun()
 
@@ -360,7 +366,7 @@ elif page == "⚙️ API Setup":
                 st.error(f"Ошибка скачивания или парсинга: {e}")
                 st.stop()
 
-            gpt_describe(spec, project["openai"])
+            gpt_describe(spec, OPENAI_ENV)
             api["spec"] = spec
             eps = {(p, m.lower()) for p, v in spec["paths"].items() for m in v}
             if not api["enabled"]:
@@ -394,9 +400,10 @@ elif page == "💬 Chat":
     st.header("💬 Тестовый чат с MCP")
 
     all_servers = [
-        (pj_name, api_name, cfg)
+        (pj_name, api_name, state["api_catalog"][api_name])
         for pj_name, pj in state["projects"].items()
-        for api_name, cfg in pj["apis"].items()
+        for api_name in pj.get("apis", [])
+        if api_name in state["api_catalog"]
     ]
     if not all_servers:
         st.info("Нет настроенных API-профилей.")
@@ -409,12 +416,12 @@ elif page == "💬 Chat":
     ]
     sel_label = st.selectbox("Выберите MCP-профиль", options)
     pj_name, api_name = sel_label.split("  ")[0].split("/")
-    chat_cfg = state["projects"][pj_name]["apis"][api_name]
+    chat_cfg = state["api_catalog"][api_name]
     running = chat_cfg.get("thread") and chat_cfg["thread"].is_alive()
 
     if st.button("🚀 Запустить / Перезапустить MCP", use_container_width=True):
         try:
-            start_mcp(state["projects"][pj_name], api_name)
+            start_mcp(chat_cfg)
         except Exception as e:
             st.error(f"FastMCP error: {e}")
         rerun()
