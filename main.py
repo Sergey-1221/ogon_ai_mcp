@@ -139,7 +139,14 @@ state.setdefault("chat",     [])        # [(role, text)]
 #  SIDEBAR NAVIGATION                                               #
 # ══════════════════════════════════════════════════════════════════
 PAGES = ["💬 Chat", "🔄 Convert", "🗂 Projects", "⚙️ API Setup"]
-page = st.sidebar.radio("Навигация", PAGES)
+state.setdefault("page", PAGES[0])
+for p in PAGES:
+    if st.sidebar.button(p, key=f"nav_{p}",
+                         type="primary" if state["page"] == p else "secondary",
+                         use_container_width=True):
+        state["page"] = p
+        rerun()
+page = state["page"]
 
 # highlight selected project
 if state.get("proj_sel"):
@@ -165,7 +172,8 @@ if page == "🗂 Projects":
                                       project["openai"], type="password",
                                       help="Пусто → берётся из .env")
 
-    if st.button("💾 Сохранить проект"):
+    if st.button("💾 Сохранить проект", type="primary",
+                 use_container_width=True):
         if not project["name"]:
             st.warning("Имя проекта обязательно.")
         else:
@@ -213,7 +221,7 @@ elif page == "⚙️ API Setup":
         api["query_name"]  = st.text_input("Auth query", api["query_name"])
         api["query_val"]   = st.text_input("Query value", api["query_val"])
 
-    if st.button("💾 Сохранить API"):
+    if st.button("💾 Сохранить API", type="primary", use_container_width=True):
         if not api["name"] or not api["url"]:
             st.warning("Заполните имя и URL спецификации.")
         else:
@@ -241,7 +249,8 @@ elif page == "🔄 Convert":
     api = project["apis"][state["api_sel"]]
 
     # 1. Загрузка спецификации
-    if st.button("🔄 Скачать спецификацию"):
+    if st.button("🔄 Скачать спецификацию", type="primary",
+                 use_container_width=True):
         try:
             spec = load_openapi(api["url"])
         except Exception as e:
@@ -269,7 +278,8 @@ elif page == "🔄 Convert":
                         key, value=api["enabled"][key])
 
         # 3. Запуск MCP
-        if st.button("🚀 Запустить / Перезапустить MCP"):
+        if st.button("🚀 Запустить / Перезапустить MCP", type="primary",
+                     use_container_width=True):
             allowed = {(p, m.lower()) for p, m in
                        [k.split(" ", 1)[::-1]
                         for k, v in api["enabled"].items() if v]}
