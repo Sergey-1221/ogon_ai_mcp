@@ -27,6 +27,7 @@ REST → MCP DASHBOARD  •  v2025-06
    • Управление глобальным каталогом API-профилей (URL, порт, auth-
      заголовки или query-ключ, имя). Профиль хранит также spec,
      enabled-map, тред сервера и логи.
+   • Несколько примеров профилей доступны через «Добавить из каталога».
 
 ---------------------------------------------------------------------
 Зависимости  (requirements.txt):
@@ -119,7 +120,9 @@ def make_http_client(base: str, headers: Dict, qparams: Dict, logger):
     """httpx.AsyncClient с хуком логирования."""
 
     def hook(resp: httpx.Response):
-        logger(f"{resp.request.method} {resp.request.url} → {resp.status_code}")
+        logger(
+            f"{resp.request.method} {resp.request.url} → {resp.status_code}"
+        )
 
     return httpx.AsyncClient(
         base_url=base,
@@ -168,9 +171,25 @@ def save_state():
 
 # Каталог заранее известных API-профилей
 PREDEFINED_APIS = {
-    "Petstore": {
+    "Petstore v2": {
         "url": "https://petstore.swagger.io/v2/swagger.json",
         "port": 8000,
+    },
+    "Petstore v3": {
+        "url": "https://petstore3.swagger.io/api/v3/openapi.json",
+        "port": 8001,
+    },
+    "GitHub": {
+        "url": "https://api.apis.guru/v2/specs/github.com/1.1.4/openapi.json",
+        "port": 8002,
+    },
+    "OpenAI": {
+        "url": "https://raw.githubusercontent.com/openai/openai-openapi/master/openapi.yaml",
+        "port": 8003,
+    },
+    "Stripe": {
+        "url": "https://api.apis.guru/v2/specs/stripe.com/2022-11-15/openapi.json",
+        "port": 8004,
     },
 }
 
@@ -182,15 +201,23 @@ def start_mcp(api: dict):
 
     allowed = {
         (p, m.lower())
-        for p, m in [k.split(" ", 1)[::-1] for k, v in api["enabled"].items() if v]
+        for p, m in [
+            k.split(" ", 1)[::-1] for k, v in api["enabled"].items() if v
+        ]
     }
     spec_filtered = filter_spec(api["spec"], allowed)
 
     base = (api["spec"].get("servers", [{"url": ""}])[0]["url"]).rstrip("/")
-    headers = {api["header_name"]: api["header_val"]} if api["header_name"] else {}
-    qparams = {api["query_name"]: api["query_val"]} if api["query_name"] else {}
+    headers = (
+        {api["header_name"]: api["header_val"]} if api["header_name"] else {}
+    )
+    qparams = (
+        {api["query_name"]: api["query_val"]} if api["query_name"] else {}
+    )
 
-    client = make_http_client(base, headers, qparams, lambda m: log_line(api, m))
+    client = make_http_client(
+        base, headers, qparams, lambda m: log_line(api, m)
+    )
 
     mcp = FastMCP.from_openapi(
         spec_filtered,
@@ -299,7 +326,9 @@ if page == "🗂 Projects":
             key="proj_api_ms",
         )
         if st.button(
-            "💾 Сохранить список", key="proj_api_save", use_container_width=True
+            "💾 Сохранить список",
+            key="proj_api_save",
+            use_container_width=True,
         ):
             project["apis"] = sel
             state["projects"][project["name"]] = project
@@ -313,7 +342,9 @@ if page == "🗂 Projects":
                 continue
             running = cfg.get("thread") and cfg["thread"].is_alive()
             badge = "✅" if running else "⏹"
-            st.write(f"{badge} **{api_name}**  —  {cfg['url']}  (:{cfg['port']})")
+            st.write(
+                f"{badge} **{api_name}**  —  {cfg['url']}  (:{cfg['port']})"
+            )
 
 # ───────────────────────────────────────────────────── API Setup ──
 elif page == "⚙️ API Setup":
@@ -376,8 +407,12 @@ elif page == "⚙️ API Setup":
             api["url"] = st.text_input("URL спецификации", api["url"])
             api["port"] = st.number_input("Порт MCP", 1024, 65535, api["port"])
         with col2:
-            api["header_name"] = st.text_input("Auth header", api["header_name"])
-            api["header_val"] = st.text_input("Header value", api["header_val"])
+            api["header_name"] = st.text_input(
+                "Auth header", api["header_name"]
+            )
+            api["header_val"] = st.text_input(
+                "Header value", api["header_val"]
+            )
             api["query_name"] = st.text_input("Auth query", api["query_name"])
             api["query_val"] = st.text_input("Query value", api["query_val"])
 
@@ -423,7 +458,9 @@ elif page == "⚙️ API Setup":
                             api["enabled"][key] = st.checkbox(
                                 key, value=api["enabled"][key]
                             )
-                if st.form_submit_button("💾 Сохранить", use_container_width=True):
+                if st.form_submit_button(
+                    "💾 Сохранить", use_container_width=True
+                ):
                     save_state()
                     rerun()
 
@@ -501,7 +538,10 @@ elif page == "💬 Chat":
 
         openai.api_key = state["projects"][pj_name]["openai"] or OPENAI_ENV
         conv = [
-            {"role": "system", "content": "При необходимости используй MCP-tools."}
+            {
+                "role": "system",
+                "content": "При необходимости используй MCP-tools.",
+            }
         ] + [{"role": r, "content": m} for r, m in state["chat"]]
 
         while True:
@@ -533,7 +573,11 @@ elif page == "💬 Chat":
                     }
                 )
                 conv.append(
-                    {"role": "function", "name": fc.name, "content": tool_answer}
+                    {
+                        "role": "function",
+                        "name": fc.name,
+                        "content": tool_answer,
+                    }
                 )
             else:
                 answer = msg.content
