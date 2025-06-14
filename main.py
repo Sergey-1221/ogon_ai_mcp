@@ -134,6 +134,7 @@ state.setdefault("projects", {})        # name → project-dict
 state.setdefault("proj_sel", None)      # выбранный проект
 state.setdefault("api_sel",  None)      # выбранный API-профиль
 state.setdefault("chat",     [])        # [(role, text)]
+state.setdefault("api_library", {})    # глобальный каталог API
 
 # ══════════════════════════════════════════════════════════════════
 #  SIDEBAR NAVIGATION                                               #
@@ -184,10 +185,29 @@ if page == "🗂 Projects":
     if not creating_new:
         st.divider()
         st.subheader("API-профили в проекте")
-        for api_name, cfg in project["apis"].items():
-            running = cfg.get("thread") and cfg["thread"].is_alive()
-            badge = "✅" if running else "⏹"
-            st.write(f"{badge} **{api_name}**  —  {cfg['url']}  (:{cfg['port']})")
+        for api_name, cfg in list(project["apis"].items()):
+            cols = st.columns([6, 1])
+            with cols[0]:
+                running = cfg.get("thread") and cfg["thread"].is_alive()
+                badge = "✅" if running else "⏹"
+                st.write(f"{badge} **{api_name}**  —  {cfg['url']}  (:{cfg['port']})")
+            with cols[1]:
+                if st.button("❌", key=f"del_{api_name}"):
+                    if running:
+                        st.warning("Остановите MCP перед удалением")
+                    else:
+                        project["apis"].pop(api_name)
+                        if state.get("api_sel") == api_name:
+                            state["api_sel"] = None
+                        rerun()
+
+        avail = [n for n in state["api_library"] if n not in project["apis"]]
+        if avail:
+            with st.form("attach_api_form"):
+                name = st.selectbox("Подключить API", avail)
+                if st.form_submit_button("➕ Добавить", type="primary", use_container_width=True):
+                    project["apis"][name] = copy.deepcopy(state["api_library"][name])
+                    rerun()
 
 # ───────────────────────────────────────────────────── API Setup ──
 elif page == "⚙️ API Setup":
@@ -204,11 +224,19 @@ elif page == "⚙️ API Setup":
                                      if state["api_sel"] in api_names else 0))
     creating_api = chosen_api == "< создать >"
 
+    template = None
+    if creating_api and state["api_library"]:
+        template = st.selectbox("Импортировать из библиотеки",
+                                ["<пусто>"] + list(state["api_library"]))
+
     api = {"name": "", "url": "", "port": 8000,
            "header_name": "", "header_val": "",
            "query_name": "", "query_val": "",
-           "spec": None, "enabled": {}, "thread": None, "logs": []} \
-          if creating_api else project["apis"][chosen_api]
+           "spec": None, "enabled": {}, "thread": None, "logs": []}
+    if not creating_api:
+        api.update(project["apis"][chosen_api])
+    elif template and template != "<пусто>":
+        api.update(copy.deepcopy(state["api_library"][template]))
 
     with st.form("api_form"):
         col1, col2 = st.columns(2)
@@ -227,6 +255,11 @@ elif page == "⚙️ API Setup":
                 st.warning("Заполните имя и URL спецификации.")
             else:
                 project["apis"][api["name"]] = api
+                clean = {k: api[k] for k in [
+                    "name", "url", "port", "header_name", "header_val",
+                    "query_name", "query_val", "spec", "enabled"
+                ]}
+                state["api_library"][api["name"]] = copy.deepcopy(clean)
                 state["api_sel"] = api["name"]
                 rerun()
 
