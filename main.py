@@ -135,11 +135,44 @@ state.setdefault("proj_sel", None)      # выбранный проект
 state.setdefault("api_sel",  None)      # выбранный API-профиль
 state.setdefault("chat",     [])        # [(role, text)]
 state.setdefault("api_library", {})    # глобальный каталог API
+        for api_name, cfg in list(project["apis"].items()):
+            cols = st.columns([6, 1])
+            with cols[0]:
+                running = cfg.get("thread") and cfg["thread"].is_alive()
+                badge = "✅" if running else "⏹"
+                st.write(f"{badge} **{api_name}**  —  {cfg['url']}  (:{cfg['port']})")
+            with cols[1]:
+                if st.button("❌", key=f"del_{api_name}"):
+                    if running:
+                        st.warning("Остановите MCP перед удалением")
+                    else:
+                        project["apis"].pop(api_name)
+                        if state.get("api_sel") == api_name:
+                            state["api_sel"] = None
+                        rerun()
 
-# ══════════════════════════════════════════════════════════════════
-#  SIDEBAR NAVIGATION                                               #
-# ══════════════════════════════════════════════════════════════════
-PAGES = ["💬 Chat", "🔄 Convert", "🗂 Projects", "⚙️ API Setup"]
+        avail = [n for n in state["api_library"] if n not in project["apis"]]
+        if avail:
+            with st.form("attach_api_form"):
+                name = st.selectbox("Подключить API", avail)
+                if st.form_submit_button("➕ Добавить", type="primary", use_container_width=True):
+                    project["apis"][name] = copy.deepcopy(state["api_library"][name])
+                    rerun()
+    template = None
+    if creating_api and state["api_library"]:
+        template = st.selectbox("Импортировать из библиотеки",
+                                ["<пусто>"] + list(state["api_library"]))
+
+           "spec": None, "enabled": {}, "thread": None, "logs": []}
+    if not creating_api:
+        api.update(project["apis"][chosen_api])
+    elif template and template != "<пусто>":
+        api.update(copy.deepcopy(state["api_library"][template]))
+                clean = {k: api[k] for k in [
+                    "name", "url", "port", "header_name", "header_val",
+                    "query_name", "query_val", "spec", "enabled"
+                ]}
+                state["api_library"][api["name"]] = copy.deepcopy(clean)
 state.setdefault("page", PAGES[0])
 with st.sidebar:
     for p in PAGES:
