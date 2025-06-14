@@ -1,0 +1,10 @@
+{
+  "projects": {
+    "Test": {
+      "name": "Test",
+      "openai": "",
+      "apis": []
+    }
+  },
+  "api_catalog": {}
+}
