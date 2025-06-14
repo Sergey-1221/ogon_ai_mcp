@@ -13,22 +13,20 @@ REST → MCP DASHBOARD  •  v2025-06
 
 2. 🔄 CONVERT
    ───────────
-   • Загрузка Swagger/OpenAPI (JSON или YAML) по URL.
-   • (Опц.) GPT-генерация описаний эндпоинтов.
-   • Галочки для включения/исключения методов.
-   • Запуск/перезапуск локального MCP-сервера на выбранном порту.
+   • Подсказка о том, что загрузка спецификации теперь в «API Setup»,
+     а запуск MCP перенесён в «Chat».
 
 3. 🗂 PROJECTS
    ───────────
    • Создание/удаление проектов.  В каждом проекте — один OpenAI-ключ.
-   • Перечень всех API-профилей проекта и их текущий статус
+   • Подключение нужных API-профилей из глобального каталога и их статус
      («✅ запущен» или «⏹ остановлен»).
 
 4. ⚙️ API SETUP
    ─────────────
-   • Добавление/редактирование API-профиля (URL, порт, auth-заголовки
-     или query-ключ, имя).  Профиль хранит также spec, enabled-map,
-     тред сервера и логи.
+   • Управление глобальным каталогом API-профилей (URL, порт, auth-
+     заголовки или query-ключ, имя). Профиль хранит также spec,
+     enabled-map, тред сервера и логи.
 
 ---------------------------------------------------------------------
 Зависимости  (requirements.txt):
@@ -62,6 +60,7 @@ import requests, httpx, openai
 from dotenv import load_dotenv
 from mcp.server.fastmcp import FastMCP
 
+
 # ══════════════════════════════════════════════════════════════════
 #  ПОЛЕЗНЫЕ ФУНКЦИИ                                                  #
 # ══════════════════════════════════════════════════════════════════
@@ -69,15 +68,17 @@ def rerun():
     """Streamlit ≥1.30 → st.rerun, старые → experimental_rerun."""
     (getattr(st, "rerun", None) or st.experimental_rerun)()
 
+
 def load_openapi(url: str) -> Dict:
     """Скачать OpenAPI/Swagger по URL и вернуть словарь."""
     r = requests.get(url, timeout=20)
     r.raise_for_status()
     txt = r.text.lstrip()
     try:
-        return json.loads(txt)        # JSON
+        return json.loads(txt)  # JSON
     except json.JSONDecodeError:
-        return yaml.safe_load(txt)    # YAML
+        return yaml.safe_load(txt)  # YAML
+
 
 def gpt_describe(spec: Dict, api_key: str):
     """Добавить/обновить description для каждого operation."""
@@ -86,16 +87,21 @@ def gpt_describe(spec: Dict, api_key: str):
     openai.api_key = api_key
     for path, meths in spec["paths"].items():
         for method, op in meths.items():
-            prompt = (f"Опиши назначение эндпоинта одним предложением:\n"
-                      f"{method.upper()} {path}")
+            prompt = (
+                f"Опиши назначение эндпоинта одним предложением:\n"
+                f"{method.upper()} {path}"
+            )
             try:
                 resp = openai.ChatCompletion.create(
                     model="gpt-3.5-turbo",
                     messages=[{"role": "user", "content": prompt}],
-                    max_tokens=40, temperature=0)
+                    max_tokens=40,
+                    temperature=0,
+                )
                 op["description"] = resp.choices[0].message.content.strip()
             except Exception as e:
                 print("GPT error:", e)
+
 
 def filter_spec(spec: Dict, allowed: Set[Tuple[str, str]]) -> Dict:
     """Вернуть копию spec, содержащую только allowed (path, method)."""
@@ -108,18 +114,69 @@ def filter_spec(spec: Dict, allowed: Set[Tuple[str, str]]) -> Dict:
             s2["paths"].pop(p)
     return s2
 
+
 def make_http_client(base: str, headers: Dict, qparams: Dict, logger):
     """httpx.AsyncClient с хуком логирования."""
+
     def hook(resp: httpx.Response):
         logger(f"{resp.request.method} {resp.request.url} → {resp.status_code}")
-    return httpx.AsyncClient(base_url=base, headers=headers,
-                             params=qparams, timeout=20,
-                             event_hooks={"response": [hook]})
 
-def log_line(project: dict, api_name: str, msg: str):
-    project["apis"][api_name].setdefault("logs", []).append(
-        f"{time.strftime('%H:%M:%S')}  {msg}"
+    return httpx.AsyncClient(
+        base_url=base,
+        headers=headers,
+        params=qparams,
+        timeout=20,
+        event_hooks={"response": [hook]},
     )
+
+
+def log_line(api: dict, msg: str):
+    api.setdefault("logs", []).append(f"{time.strftime('%H:%M:%S')}  {msg}")
+
+
+# Каталог заранее известных API-профилей
+PREDEFINED_APIS = {
+    "Petstore": {
+        "url": "https://petstore.swagger.io/v2/swagger.json",
+        "port": 8000,
+    },
+}
+
+
+def start_mcp(api: dict):
+    """Запустить FastMCP для указанного профиля."""
+    if not api.get("spec"):
+        raise RuntimeError("Spec not loaded")
+
+    allowed = {
+        (p, m.lower())
+        for p, m in [k.split(" ", 1)[::-1] for k, v in api["enabled"].items() if v]
+    }
+    spec_filtered = filter_spec(api["spec"], allowed)
+
+    base = (api["spec"].get("servers", [{"url": ""}])[0]["url"]).rstrip("/")
+    headers = {api["header_name"]: api["header_val"]} if api["header_name"] else {}
+    qparams = {api["query_name"]: api["query_val"]} if api["query_name"] else {}
+
+    client = make_http_client(base, headers, qparams, lambda m: log_line(api, m))
+
+    mcp = FastMCP.from_openapi(
+        spec_filtered,
+        client,
+        name=api["name"],
+        host="0.0.0.0",
+        port=api["port"],
+    )
+
+    def run_server():
+        log_line(api, f"🚀 MCP start :{api['port']}")
+        mcp.run()
+
+    t = threading.Thread(target=run_server, daemon=True)
+    t.start()
+    api["thread"] = t
+    api["logs"] = []
+
 
 # ══════════════════════════════════════════════════════════════════
 #  ИНИЦИАЛИЗАЦИЯ SESSION_STATE                                      #
@@ -130,10 +187,11 @@ OPENAI_ENV = os.getenv("OPENAI_API_KEY", "")
 st.set_page_config(page_title="REST → MCP", layout="wide")
 
 state = st.session_state
-state.setdefault("projects", {})        # name → project-dict
-state.setdefault("proj_sel", None)      # выбранный проект
-state.setdefault("api_sel",  None)      # выбранный API-профиль
-state.setdefault("chat",     [])        # [(role, text)]
+state.setdefault("projects", {})  # name → project-dict
+state.setdefault("api_catalog", {})  # глобальные API-профили
+state.setdefault("proj_sel", None)  # выбранный проект
+state.setdefault("api_sel", None)  # выбранный API-профиль
+state.setdefault("chat", [])  # [(role, text)]
 
 # ══════════════════════════════════════════════════════════════════
 #  SIDEBAR NAVIGATION                                               #
@@ -142,9 +200,12 @@ PAGES = ["💬 Chat", "🔄 Convert", "🗂 Projects", "⚙️ API Setup"]
 state.setdefault("page", PAGES[0])
 with st.sidebar:
     for p in PAGES:
-        if st.button(p, key=f"nav_{p}",
-                     type="primary" if state["page"] == p else "secondary",
-                     use_container_width=True):
+        if st.button(
+            p,
+            key=f"nav_{p}",
+            type="primary" if state["page"] == p else "secondary",
+            use_container_width=True,
+        ):
             state["page"] = p
             rerun()
     st.divider()
@@ -159,21 +220,33 @@ if page == "🗂 Projects":
     st.header("🗂 Управление проектами")
 
     proj_names = list(state["projects"])
-    chosen = st.selectbox("Проект",
-                          ["< создать >"] + proj_names,
-                          index=(proj_names.index(state["proj_sel"]) + 1
-                                 if state["proj_sel"] in proj_names else 0))
+    chosen = st.selectbox(
+        "Проект",
+        ["< создать >"] + proj_names,
+        index=(
+            proj_names.index(state["proj_sel"]) + 1
+            if state["proj_sel"] in proj_names
+            else 0
+        ),
+    )
     creating_new = chosen == "< создать >"
 
-    project = {"name": "", "openai": OPENAI_ENV, "apis": {}} \
-              if creating_new else state["projects"][chosen]
+    project = (
+        {"name": "", "openai": OPENAI_ENV, "apis": []}
+        if creating_new
+        else state["projects"][chosen]
+    )
     with st.form("proj_form"):
         project["name"] = st.text_input("Название проекта", project["name"])
-        project["openai"] = st.text_input("OpenAI API-ключ",
-                                          project["openai"], type="password",
-                                          help="Пусто → берётся из .env")
-        if st.form_submit_button("💾 Сохранить проект", type="primary",
-                                use_container_width=True):
+        project["openai"] = st.text_input(
+            "OpenAI API-ключ",
+            project["openai"],
+            type="password",
+            help="Пусто → берётся из .env",
+        )
+        if st.form_submit_button(
+            "💾 Сохранить проект", type="primary", use_container_width=True
+        ):
             if not project["name"]:
                 st.warning("Имя проекта обязательно.")
             else:
@@ -183,8 +256,25 @@ if page == "🗂 Projects":
 
     if not creating_new:
         st.divider()
-        st.subheader("API-профили в проекте")
-        for api_name, cfg in project["apis"].items():
+        st.subheader("Подключить API-профили")
+        sel = st.multiselect(
+            "Доступные профили",
+            list(state["api_catalog"]),
+            default=project.get("apis", []),
+            key="proj_api_ms",
+        )
+        if st.button(
+            "💾 Сохранить список", key="proj_api_save", use_container_width=True
+        ):
+            project["apis"] = sel
+            state["projects"][project["name"]] = project
+            rerun()
+
+        st.subheader("Текущие профили")
+        for api_name in project.get("apis", []):
+            cfg = state["api_catalog"].get(api_name)
+            if not cfg:
+                continue
             running = cfg.get("thread") and cfg["thread"].is_alive()
             badge = "✅" if running else "⏹"
             st.write(f"{badge} **{api_name}**  —  {cfg['url']}  (:{cfg['port']})")
@@ -192,159 +282,154 @@ if page == "🗂 Projects":
 # ───────────────────────────────────────────────────── API Setup ──
 elif page == "⚙️ API Setup":
     st.header("⚙️ Настройка API-профиля")
-    if not state["proj_sel"]:
-        st.info("Создайте/выберите проект во вкладке «Projects».")
-        st.stop()
 
-    project = state["projects"][state["proj_sel"]]
-    api_names = list(project["apis"])
-    chosen_api = st.selectbox("API-профиль",
-                              ["< создать >"] + api_names,
-                              index=(api_names.index(state["api_sel"]) + 1
-                                     if state["api_sel"] in api_names else 0))
+    st.subheader("Добавить из каталога")
+    predef = st.selectbox("Профиль", ["< выбрать >"] + list(PREDEFINED_APIS))
+    if predef != "< выбрать >" and st.button("➕ Добавить", key="add_predef"):
+        cfg = PREDEFINED_APIS[predef]
+        state["api_catalog"][predef] = {
+            "name": predef,
+            "url": cfg["url"],
+            "port": cfg.get("port", 8000),
+            "header_name": "",
+            "header_val": "",
+            "query_name": "",
+            "query_val": "",
+            "spec": None,
+            "enabled": {},
+            "thread": None,
+            "logs": [],
+        }
+        state["api_sel"] = predef
+        rerun()
+
+    api_names = list(state["api_catalog"])
+    chosen_api = st.selectbox(
+        "API-профиль",
+        ["< создать >"] + api_names,
+        index=(
+            api_names.index(state["api_sel"]) + 1
+            if state["api_sel"] in api_names
+            else 0
+        ),
+    )
     creating_api = chosen_api == "< создать >"
 
-    api = {"name": "", "url": "", "port": 8000,
-           "header_name": "", "header_val": "",
-           "query_name": "", "query_val": "",
-           "spec": None, "enabled": {}, "thread": None, "logs": []} \
-          if creating_api else project["apis"][chosen_api]
+    api = (
+        {
+            "name": "",
+            "url": "",
+            "port": 8000,
+            "header_name": "",
+            "header_val": "",
+            "query_name": "",
+            "query_val": "",
+            "spec": None,
+            "enabled": {},
+            "thread": None,
+            "logs": [],
+        }
+        if creating_api
+        else state["api_catalog"][chosen_api]
+    )
 
     with st.form("api_form"):
         col1, col2 = st.columns(2)
         with col1:
             api["name"] = st.text_input("API-имя", api["name"])
-            api["url"]  = st.text_input("URL спецификации", api["url"])
+            api["url"] = st.text_input("URL спецификации", api["url"])
             api["port"] = st.number_input("Порт MCP", 1024, 65535, api["port"])
         with col2:
             api["header_name"] = st.text_input("Auth header", api["header_name"])
-            api["header_val"]  = st.text_input("Header value", api["header_val"])
-            api["query_name"]  = st.text_input("Auth query", api["query_name"])
-            api["query_val"]   = st.text_input("Query value", api["query_val"])
+            api["header_val"] = st.text_input("Header value", api["header_val"])
+            api["query_name"] = st.text_input("Auth query", api["query_name"])
+            api["query_val"] = st.text_input("Query value", api["query_val"])
 
-        if st.form_submit_button("💾 Сохранить API", type="primary", use_container_width=True):
+        if st.form_submit_button(
+            "💾 Сохранить API", type="primary", use_container_width=True
+        ):
             if not api["name"] or not api["url"]:
                 st.warning("Заполните имя и URL спецификации.")
             else:
-                project["apis"][api["name"]] = api
+                state["api_catalog"][api["name"]] = api
                 state["api_sel"] = api["name"]
                 rerun()
 
-    # отображаем короткие логи выбранного профиля
     if not creating_api:
         st.divider()
-        running = api.get("thread") and api["thread"].is_alive()
-        st.write("Статус MCP:",
-                 "✅ **запущен**" if running else "⏹ **остановлен**")
-        st.text_area("Логи (последние 20)",
-                     "\n".join(api["logs"][-20:]), height=200)
+        if st.button(
+            "🔄 Скачать спецификацию", type="primary", use_container_width=True
+        ):
+            try:
+                spec = load_openapi(api["url"])
+            except Exception as e:
+                st.error(f"Ошибка скачивания или парсинга: {e}")
+                st.stop()
+
+            gpt_describe(spec, OPENAI_ENV)
+            api["spec"] = spec
+            eps = {(p, m.lower()) for p, v in spec["paths"].items() for m in v}
+            if not api["enabled"]:
+                api["enabled"] = {f"{m} {p}": True for (p, m) in eps}
+
+            rerun()
+
+        if api.get("spec"):
+            st.subheader("Включить/отключить эндпоинты")
+            with st.form("ep_form"):
+                cols = st.columns(2)
+                for i, (p, meths) in enumerate(api["spec"]["paths"].items()):
+                    for m in meths:
+                        key = f"{m} {p}"
+                        with cols[i % 2]:
+                            api["enabled"][key] = st.checkbox(
+                                key, value=api["enabled"][key]
+                            )
+                if st.form_submit_button("💾 Сохранить", use_container_width=True):
+                    rerun()
 
 # ───────────────────────────────────────────────────── CONVERT ───
 elif page == "🔄 Convert":
-    st.header("🔄 Загрузка OpenAPI и запуск MCP")
-    if not state["proj_sel"] or not state["api_sel"]:
-        st.info("Выберите проект и API во вкладке «API Setup».")
-        st.stop()
-
-    project = state["projects"][state["proj_sel"]]
-    api = project["apis"][state["api_sel"]]
-
-    # 1. Загрузка спецификации
-    if st.button("🔄 Скачать спецификацию", type="primary",
-                 use_container_width=True):
-        try:
-            spec = load_openapi(api["url"])
-        except Exception as e:
-            st.error(f"Ошибка скачивания или парсинга: {e}")
-            st.stop()
-
-        gpt_describe(spec, project["openai"])
-        api["spec"] = spec
-        eps = {(p, m.lower()) for p, v in spec["paths"].items() for m in v}
-        if not api["enabled"]:
-            api["enabled"] = {f"{m} {p}": True for (p, m) in eps}
-
-        rerun()
-
-    # 2. Выбор эндпоинтов
-    if api.get("spec"):
-        st.subheader("Включить/отключить эндпоинты")
-        with st.form("mcp_form"):
-            cols = st.columns(2)
-            for i, (p, meths) in enumerate(api["spec"]["paths"].items()):
-                for m in meths:
-                    key = f"{m} {p}"
-                    with cols[i % 2]:
-                        api["enabled"][key] = st.checkbox(
-                            key, value=api["enabled"][key])
-
-            run_mcp = st.form_submit_button("🚀 Запустить / Перезапустить MCP",
-                                           type="primary",
-                                           use_container_width=True)
-
-        if run_mcp:
-            allowed = {(p, m.lower()) for p, m in
-                       [k.split(" ", 1)[::-1]
-                        for k, v in api["enabled"].items() if v]}
-            spec_filtered = filter_spec(api["spec"], allowed)
-
-            base = (api["spec"].get("servers", [{"url": ""}])[0]["url"]).rstrip("/")
-            headers = ({api["header_name"]: api["header_val"]}
-                       if api["header_name"] else {})
-            qparams = ({api["query_name"]: api["query_val"]}
-                       if api["query_name"] else {})
-
-            client = make_http_client(base, headers, qparams,
-                                      lambda m: log_line(project, api["name"], m))
-
-            try:
-                mcp = FastMCP.from_openapi(
-                    spec_filtered, client,
-                    name=f"{project['name']}_{api['name']}",
-                    host="0.0.0.0", port=api["port"])
-            except Exception as e:
-                st.error(f"FastMCP error: {e}")
-                st.stop()
-
-            def run_server():
-                log_line(project, api["name"], f"🚀 MCP start :{api['port']}")
-                mcp.run()
-
-            # остановка старого сервера не реализована (FastMCP нет stop())
-            t = threading.Thread(target=run_server, daemon=True)
-            t.start()
-            api["thread"] = t
-            api["logs"] = []
-            rerun()
-
-    # вывод текущего статуса
-    running = api.get("thread") and api["thread"].is_alive()
-    if running:
-        st.success(f"MCP-сервер запущен на :{api['port']}")
-    st.text_area("Логи сервера", "\n".join(api.get("logs", [])[-20:]),
-                 height=200)
+    st.header("🔄 Convert")
+    st.info(
+        "Загрузка спецификации теперь во вкладке «API Setup», запуск MCP — во вкладке «Chat»."
+    )
 
 # ───────────────────────────────────────────────────── CHAT ──────
 elif page == "💬 Chat":
     st.header("💬 Тестовый чат с MCP")
 
-    # список всех запущенных серверов
-    running_servers = [
-        (pj_name, api_name, cfg)
+    all_servers = [
+        (pj_name, api_name, state["api_catalog"][api_name])
         for pj_name, pj in state["projects"].items()
-        for api_name, cfg in pj["apis"].items()
-        if cfg.get("thread") and cfg["thread"].is_alive()
+        for api_name in pj.get("apis", [])
+        if api_name in state["api_catalog"]
     ]
-    if not running_servers:
-        st.info("Нет работающих MCP-серверов.")
+    if not all_servers:
+        st.info("Нет настроенных API-профилей.")
         st.stop()
 
-    sel_label = st.selectbox(
-        "Выберите MCP-сервер",
-        [f"{pj}/{api}  (:{cfg['port']})" for pj, api, cfg in running_servers]
-    )
+    options = [
+        f"{pj}/{api}  (:{cfg['port']})"
+        + (" ✅" if cfg.get("thread") and cfg["thread"].is_alive() else " ⏹")
+        for pj, api, cfg in all_servers
+    ]
+    sel_label = st.selectbox("Выберите MCP-профиль", options)
     pj_name, api_name = sel_label.split("  ")[0].split("/")
-    chat_cfg = state["projects"][pj_name]["apis"][api_name]
+    chat_cfg = state["api_catalog"][api_name]
+    running = chat_cfg.get("thread") and chat_cfg["thread"].is_alive()
+
+    if st.button("🚀 Запустить / Перезапустить MCP", use_container_width=True):
+        try:
+            start_mcp(chat_cfg)
+        except Exception as e:
+            st.error(f"FastMCP error: {e}")
+        rerun()
+
+    if not running:
+        st.info("Сервер не запущен.")
+        st.stop()
+
     port = chat_cfg["port"]
 
     # вывод истории
@@ -359,30 +444,30 @@ elif page == "💬 Chat":
         # получить tools /tools/list
         try:
             tools_json = requests.post(
-                f"http://localhost:{port}/tools/list",
-                timeout=10).json()
+                f"http://localhost:{port}/tools/list", timeout=10
+            ).json()
             tools = tools_json["tools"]
         except Exception as e:
             st.error(f"/tools/list error: {e}")
             st.stop()
 
         functions = [
-            {"name": t["name"],
-             "description": t["description"],
-             "parameters": t["input_schema"]}
+            {
+                "name": t["name"],
+                "description": t["description"],
+                "parameters": t["input_schema"],
+            }
             for t in tools
         ]
 
         openai.api_key = state["projects"][pj_name]["openai"] or OPENAI_ENV
-        conv = [{"role": "system",
-                 "content": "При необходимости используй MCP-tools."}] + \
-               [{"role": r, "content": m} for r, m in state["chat"]]
+        conv = [
+            {"role": "system", "content": "При необходимости используй MCP-tools."}
+        ] + [{"role": r, "content": m} for r, m in state["chat"]]
 
         while True:
             resp = openai.ChatCompletion.create(
-                model="gpt-3.5-turbo-1106",
-                messages=conv,
-                functions=functions
+                model="gpt-3.5-turbo-1106", messages=conv, functions=functions
             )
             msg = resp.choices[0].message
 
@@ -394,15 +479,23 @@ elif page == "💬 Chat":
                     result = requests.post(
                         f"http://localhost:{port}/tools/call",
                         json={"name": fc.name, "arguments": args},
-                        timeout=30).json()
+                        timeout=30,
+                    ).json()
                     tool_answer = result["content"][0]["text"]
                 except Exception as e:
                     tool_answer = f"⚠️ MCP error: {e}"
 
-                conv.append({"role": "assistant", "name": fc.name,
-                             "content": None, "function_call": fc})
-                conv.append({"role": "function", "name": fc.name,
-                             "content": tool_answer})
+                conv.append(
+                    {
+                        "role": "assistant",
+                        "name": fc.name,
+                        "content": None,
+                        "function_call": fc,
+                    }
+                )
+                conv.append(
+                    {"role": "function", "name": fc.name, "content": tool_answer}
+                )
             else:
                 answer = msg.content
                 state["chat"].append(("assistant", answer))
