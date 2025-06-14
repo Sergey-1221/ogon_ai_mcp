@@ -134,6 +134,38 @@ def log_line(api: dict, msg: str):
     api.setdefault("logs", []).append(f"{time.strftime('%H:%M:%S')}  {msg}")
 
 
+# ──────────────────────────────────────────────────────────────────
+#  Persist projects and API catalog to disk
+# ──────────────────────────────────────────────────────────────────
+DATA_FILE = "dashboard.json"
+
+
+def load_state():
+    if os.path.exists(DATA_FILE):
+        with open(DATA_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        state["projects"] = data.get("projects", {})
+        cats = data.get("api_catalog", {})
+        state["api_catalog"] = {
+            k: {**v, "thread": None, "logs": []} for k, v in cats.items()
+        }
+    else:
+        state["projects"] = {}
+        state["api_catalog"] = {}
+
+
+def save_state():
+    cats = {}
+    for k, v in state.get("api_catalog", {}).items():
+        v2 = {**v}
+        v2.pop("thread", None)
+        v2.pop("logs", None)
+        cats[k] = v2
+    data = {"projects": state.get("projects", {}), "api_catalog": cats}
+    with open(DATA_FILE, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+
+
 # Каталог заранее известных API-профилей
 PREDEFINED_APIS = {
     "Petstore": {
@@ -176,6 +208,7 @@ def start_mcp(api: dict):
     t.start()
     api["thread"] = t
     api["logs"] = []
+    save_state()
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -187,6 +220,7 @@ OPENAI_ENV = os.getenv("OPENAI_API_KEY", "")
 st.set_page_config(page_title="REST → MCP", layout="wide")
 
 state = st.session_state
+load_state()
 state.setdefault("projects", {})  # name → project-dict
 state.setdefault("api_catalog", {})  # глобальные API-профили
 state.setdefault("proj_sel", None)  # выбранный проект
@@ -252,6 +286,7 @@ if page == "🗂 Projects":
             else:
                 state["projects"][project["name"]] = project
                 state["proj_sel"] = project["name"]
+                save_state()
                 rerun()
 
     if not creating_new:
@@ -268,6 +303,7 @@ if page == "🗂 Projects":
         ):
             project["apis"] = sel
             state["projects"][project["name"]] = project
+            save_state()
             rerun()
 
         st.subheader("Текущие профили")
@@ -353,6 +389,7 @@ elif page == "⚙️ API Setup":
             else:
                 state["api_catalog"][api["name"]] = api
                 state["api_sel"] = api["name"]
+                save_state()
                 rerun()
 
     if not creating_api:
@@ -372,6 +409,7 @@ elif page == "⚙️ API Setup":
             if not api["enabled"]:
                 api["enabled"] = {f"{m} {p}": True for (p, m) in eps}
 
+            save_state()
             rerun()
 
         if api.get("spec"):
@@ -386,6 +424,7 @@ elif page == "⚙️ API Setup":
                                 key, value=api["enabled"][key]
                             )
                 if st.form_submit_button("💾 Сохранить", use_container_width=True):
+                    save_state()
                     rerun()
 
 # ───────────────────────────────────────────────────── CONVERT ───
