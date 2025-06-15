@@ -57,7 +57,7 @@ REST → MCP DASHBOARD  •  v2025-06
 ---------------------------------------------------------------------
 """
 
-import os, json, yaml, threading, time, copy
+import os, json, yaml, threading, time, copy, hashlib, re
 from typing import Dict, Tuple, Set
 
 import streamlit as st
@@ -74,15 +74,36 @@ def rerun():
     (getattr(st, "rerun", None) or st.experimental_rerun)()
 
 
-def load_openapi(url: str) -> Dict:
-    """Скачать OpenAPI/Swagger по URL и вернуть словарь."""
+SPEC_CACHE = "spec_cache"
+
+
+def _cache_file(name: str, url: str) -> str:
+    """Return path to cached spec file for given API."""
+    safe = re.sub(r"\W+", "_", name.lower()) if name else ""
+    if not safe:
+        safe = hashlib.md5(url.encode()).hexdigest()
+    return os.path.join(SPEC_CACHE, f"{safe}.json")
+
+
+def load_openapi(url: str, name: str = "") -> Dict:
+    """Load OpenAPI/Swagger URL with caching."""
+    os.makedirs(SPEC_CACHE, exist_ok=True)
+    cache_path = _cache_file(name, url)
+    if os.path.exists(cache_path):
+        with open(cache_path, "r", encoding="utf-8") as f:
+            return json.load(f)
+
     r = requests.get(url, timeout=20)
     r.raise_for_status()
     txt = r.text.lstrip()
     try:
-        return json.loads(txt)  # JSON
+        spec = json.loads(txt)  # JSON
     except json.JSONDecodeError:
-        return yaml.safe_load(txt)  # YAML
+        spec = yaml.safe_load(txt)  # YAML
+
+    with open(cache_path, "w", encoding="utf-8") as f:
+        json.dump(spec, f, ensure_ascii=False, indent=2)
+    return spec
 
 
 def gpt_describe(spec: Dict, api_key: str):
@@ -530,29 +551,63 @@ elif page == "⚙️ API Setup":
     else:
         api = state["api_catalog"][state["api_sel"]]
         st.divider()
-        if st.button(
-            "🔄 Скачать спецификацию",
-            type="primary",
-            use_container_width=True,
-            key="dl_spec",
-        ):
-            try:
-                spec = load_openapi(api["url"])
-            except Exception as e:
-                st.error(f"Ошибка скачивания или парсинга: {e}")
-                st.stop()
+        if not api.get("spec"):
+            if st.button(
+                "📥 Скачать спецификацию",
+                type="primary",
+                use_container_width=True,
+                key="dl_spec",
+            ):
+                try:
+                    spec = load_openapi(api["url"], api["name"])
+                except Exception as e:
+                    st.error(f"Ошибка скачивания или парсинга: {e}")
+                    st.stop()
 
-            gpt_describe(spec, OPENAI_ENV)
-            api["spec"] = spec
-            api["operations"] = extract_ops(spec or {})
-            eps = {(p, m.lower()) for p, v in spec["paths"].items() for m in v}
-            if not api["enabled"]:
-                api["enabled"] = {f"{m} {p}": True for (p, m) in eps}
+                gpt_describe(spec, OPENAI_ENV)
+                api["spec"] = spec
+                api["operations"] = extract_ops(spec or {})
+                eps = {
+                    (p, m.lower())
+                    for p, v in spec.get("paths", {}).items()
+                    for m in v
+                }
+                if not api["enabled"]:
+                    api["enabled"] = {f"{m} {p}": True for (p, m) in eps}
 
-            save_state()
-            rerun()
+                save_state()
+                rerun()
+        else:
+            st.success("Спецификация загружена")
+            if st.button(
+                "♻️ Обновить спецификацию",
+                use_container_width=True,
+                key="refresh_spec",
+            ):
+                try:
+                    spec = load_openapi(api["url"], api["name"])
+                except Exception as e:
+                    st.error(f"Ошибка скачивания или парсинга: {e}")
+                    st.stop()
+
+                gpt_describe(spec, OPENAI_ENV)
+                api["spec"] = spec
+                api["operations"] = extract_ops(spec or {})
+                eps = {
+                    (p, m.lower())
+                    for p, v in spec.get("paths", {}).items()
+                    for m in v
+                }
+                if not api["enabled"]:
+                    api["enabled"] = {f"{m} {p}": True for (p, m) in eps}
+
+                save_state()
+                rerun()
 
         if api.get("spec"):
+            with st.expander("Просмотр спецификации"):
+                st.json(api["spec"])
+
             st.subheader("Включить/отключить эндпоинты")
             ops = api.get("operations", {})
             with st.form("ep_form"):
