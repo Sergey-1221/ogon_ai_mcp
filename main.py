@@ -26,8 +26,10 @@ REST → MCP DASHBOARD  •  v2025-06
    ─────────────
    • Управление глобальным каталогом API-профилей (URL, порт, auth-
      заголовки или query-ключ, имя). Профиль хранит также spec,
-     enabled-map, тред сервера и логи.
+    enabled-map, тред сервера и логи.
    • Несколько примеров профилей доступны через «Добавить из каталога».
+   • Папка `profiles/` автоматически подгружается при старте,
+     можно импортировать профиль из файла.
 
 ---------------------------------------------------------------------
 Зависимости  (requirements.txt):
@@ -158,6 +160,7 @@ def blank_api(name: str = "") -> Dict:
 #  Persist projects and API catalog to disk
 # ──────────────────────────────────────────────────────────────────
 DATA_FILE = "dashboard.json"
+PROFILES_DIR = "profiles"  # отдельные .json/.yaml профили
 
 
 def load_state():
@@ -173,6 +176,24 @@ def load_state():
         state["projects"] = {}
         state["api_catalog"] = {}
 
+    if os.path.isdir(PROFILES_DIR):
+        for fn in os.listdir(PROFILES_DIR):
+            if not fn.lower().endswith((".json", ".yaml", ".yml")):
+                continue
+            path = os.path.join(PROFILES_DIR, fn)
+            with open(path, "r", encoding="utf-8") as f:
+                txt = f.read()
+            try:
+                prof = json.loads(txt)
+            except json.JSONDecodeError:
+                prof = yaml.safe_load(txt)
+            if isinstance(prof, dict) and prof.get("name"):
+                state["api_catalog"][prof["name"]] = {
+                    **prof,
+                    "thread": None,
+                    "logs": [],
+                }
+
 
 def save_state():
     cats = {}
@@ -181,6 +202,11 @@ def save_state():
         v2.pop("thread", None)
         v2.pop("logs", None)
         cats[k] = v2
+        os.makedirs(PROFILES_DIR, exist_ok=True)
+        with open(
+            os.path.join(PROFILES_DIR, f"{k}.json"), "w", encoding="utf-8"
+        ) as f:
+            json.dump(v2, f, ensure_ascii=False, indent=2)
     data = {"projects": state.get("projects", {}), "api_catalog": cats}
     with open(DATA_FILE, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
@@ -376,6 +402,22 @@ elif page == "⚙️ API Setup":
             "Шаблон", ["< нет >"] + list(PREDEFINED_APIS), key="new_tpl"
         )
         new_api = state.get("new_api", blank_api())
+        uploaded = st.file_uploader(
+            "Импорт из файла", type=["json", "yaml", "yml"], key="prof_up"
+        )
+        if uploaded:
+            try:
+                txt = uploaded.read().decode()
+                try:
+                    prof = json.loads(txt)
+                except json.JSONDecodeError:
+                    prof = yaml.safe_load(txt)
+                if isinstance(prof, dict):
+                    new_api = blank_api()
+                    new_api.update(prof)
+                    st.success("Файл профиля загружен")
+            except Exception as e:
+                st.error(f"Ошибка чтения файла: {e}")
         if template != "< нет >":
             tpl = PREDEFINED_APIS[template]
             new_api = blank_api(template)
