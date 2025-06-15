@@ -394,15 +394,25 @@ if page == "🗂 Projects":
 elif page == "⚙️ API Setup":
     st.header("⚙️ Настройка API-профиля")
 
-    col_left, col_right = st.columns(2)
+    api_names = list(state["api_catalog"])
+    choice = st.selectbox(
+        "Профиль",
+        ["< создать новый >"] + api_names,
+        index=(
+            api_names.index(state["api_sel"]) + 1
+            if state["api_sel"] in api_names
+            else 0
+        ),
+        key="api_choice",
+    )
 
-    # ───── Новое API ─────
-    with col_right:
-        st.subheader("Создать новый")
+    creating = choice == "< создать новый >"
+
+    if creating:
         template = st.selectbox(
             "Шаблон", ["< нет >"] + list(PREDEFINED_APIS), key="new_tpl"
         )
-        new_api = state.get("new_api", blank_api())
+        api = state.get("new_api", blank_api())
         uploaded = st.file_uploader(
             "Импорт из файла", type=["json", "yaml", "yml"], key="prof_up"
         )
@@ -414,146 +424,97 @@ elif page == "⚙️ API Setup":
                 except json.JSONDecodeError:
                     prof = yaml.safe_load(txt)
                 if isinstance(prof, dict):
-                    new_api = blank_api()
-                    new_api.update(prof)
+                    api = blank_api()
+                    api.update(prof)
                     st.success("Файл профиля загружен")
             except Exception as e:
                 st.error(f"Ошибка чтения файла: {e}")
         if template != "< нет >":
             tpl = PREDEFINED_APIS[template]
-            new_api = blank_api(template)
-            new_api.update({"url": tpl["url"], "port": tpl.get("port", 8000)})
-        with st.form("new_api_form"):
-            col1, col2 = st.columns(2)
-            with col1:
-                new_api["name"] = st.text_input("API-имя", new_api["name"])
-                new_api["url"] = st.text_input("URL", new_api["url"])
-                new_api["port"] = st.number_input(
-                    "Порт MCP", 1024, 65535, new_api["port"]
-                )
-            with col2:
-                new_api["header_name"] = st.text_input(
-                    "Auth header", new_api["header_name"]
-                )
-                new_api["header_val"] = st.text_input(
-                    "Header value", new_api["header_val"]
-                )
-                new_api["query_name"] = st.text_input(
-                    "Auth query", new_api["query_name"]
-                )
-                new_api["query_val"] = st.text_input(
-                    "Query value", new_api["query_val"]
-                )
-            if st.form_submit_button(
-                "➕ Создать", type="primary", use_container_width=True
-            ):
-                if not new_api["name"] or not new_api["url"]:
-                    st.warning("Заполните имя и URL спецификации.")
-                elif new_api["name"] in state["api_catalog"]:
-                    st.warning("Такой профиль уже существует.")
-                else:
-                    state["api_catalog"][new_api["name"]] = new_api
-                    state["api_sel"] = new_api["name"]
-                    state["new_api"] = blank_api()
-                    save_state()
-                    rerun()
-        state["new_api"] = new_api
+            api = blank_api(template)
+            api.update({"url": tpl["url"], "port": tpl.get("port", 8000)})
+    else:
+        state["api_sel"] = choice
+        api = state["api_catalog"][choice]
 
-    # ───── Редактирование ─────
-    with col_left:
-        st.subheader("Существующие профили")
-        api_names = list(state["api_catalog"])
-        choice = st.selectbox(
-            "Профиль",
-            ["< выбрать >"] + api_names,
-            index=(
-                api_names.index(state["api_sel"]) + 1
-                if state["api_sel"] in api_names
-                else 0
-            ),
-            key="edit_sel",
-        )
-        if choice != "< выбрать >":
-            state["api_sel"] = choice
-            api = state["api_catalog"][choice]
-
-            with st.form("edit_api_form"):
-                col1, col2 = st.columns(2)
-                with col1:
-                    api["name"] = st.text_input(
-                        "API-имя", api["name"], key="e_name"
-                    )
-                    api["url"] = st.text_input("URL", api["url"], key="e_url")
-                    api["port"] = st.number_input(
-                        "Порт MCP", 1024, 65535, api["port"], key="e_port"
-                    )
-                with col2:
-                    api["header_name"] = st.text_input(
-                        "Auth header", api["header_name"], key="e_hn"
-                    )
-                    api["header_val"] = st.text_input(
-                        "Header value", api["header_val"], key="e_hv"
-                    )
-                    api["query_name"] = st.text_input(
-                        "Auth query", api["query_name"], key="e_qn"
-                    )
-                    api["query_val"] = st.text_input(
-                        "Query value", api["query_val"], key="e_qv"
-                    )
-                if st.form_submit_button(
-                    "💾 Обновить", type="primary", use_container_width=True
-                ):
-                    if not api["name"] or not api["url"]:
-                        st.warning("Заполните имя и URL спецификации.")
-                    else:
-                        state["api_catalog"][api["name"]] = api
-                        save_state()
-                        rerun()
-
-            st.divider()
-            if st.button(
-                "🔄 Скачать спецификацию",
-                type="primary",
-                use_container_width=True,
-                key="dl_spec",
-            ):
-                try:
-                    spec = load_openapi(api["url"])
-                except Exception as e:
-                    st.error(f"Ошибка скачивания или парсинга: {e}")
-                    st.stop()
-
-                gpt_describe(spec, OPENAI_ENV)
-                api["spec"] = spec
-                eps = {
-                    (p, m.lower()) for p, v in spec["paths"].items() for m in v
-                }
-                if not api["enabled"]:
-                    api["enabled"] = {f"{m} {p}": True for (p, m) in eps}
-
+    with st.form("api_form"):
+        col1, col2 = st.columns(2)
+        with col1:
+            api["name"] = st.text_input("API-имя", api["name"], key="f_name")
+            api["url"] = st.text_input("URL", api["url"], key="f_url")
+            api["port"] = st.number_input(
+                "Порт MCP", 1024, 65535, api["port"], key="f_port"
+            )
+        with col2:
+            api["header_name"] = st.text_input(
+                "Auth header", api["header_name"], key="f_hn"
+            )
+            api["header_val"] = st.text_input(
+                "Header value", api["header_val"], key="f_hv"
+            )
+            api["query_name"] = st.text_input(
+                "Auth query", api["query_name"], key="f_qn"
+            )
+            api["query_val"] = st.text_input(
+                "Query value", api["query_val"], key="f_qv"
+            )
+        btn_label = "➕ Создать" if creating else "💾 Обновить"
+        if st.form_submit_button(
+            btn_label, type="primary", use_container_width=True
+        ):
+            if not api["name"] or not api["url"]:
+                st.warning("Заполните имя и URL спецификации.")
+            elif creating and api["name"] in state["api_catalog"]:
+                st.warning("Такой профиль уже существует.")
+            else:
+                state["api_catalog"][api["name"]] = api
+                state["api_sel"] = api["name"]
+                state["new_api"] = blank_api()
                 save_state()
                 rerun()
 
-            if api.get("spec"):
-                st.subheader("Включить/отключить эндпоинты")
-                with st.form("ep_form"):
-                    cols = st.columns(2)
-                    for i, (p, meths) in enumerate(
-                        api["spec"]["paths"].items()
-                    ):
-                        for m in meths:
-                            key = f"{m} {p}"
-                            with cols[i % 2]:
-                                api["enabled"][key] = st.checkbox(
-                                    key, value=api["enabled"].get(key, False)
-                                )
-                    if st.form_submit_button(
-                        "💾 Сохранить", use_container_width=True
-                    ):
-                        save_state()
-                        rerun()
-        else:
-            st.info("Нет выбранного профиля")
+    if creating:
+        state["new_api"] = api
+    else:
+        api = state["api_catalog"][state["api_sel"]]
+        st.divider()
+        if st.button(
+            "🔄 Скачать спецификацию",
+            type="primary",
+            use_container_width=True,
+            key="dl_spec",
+        ):
+            try:
+                spec = load_openapi(api["url"])
+            except Exception as e:
+                st.error(f"Ошибка скачивания или парсинга: {e}")
+                st.stop()
+
+            gpt_describe(spec, OPENAI_ENV)
+            api["spec"] = spec
+            eps = {(p, m.lower()) for p, v in spec["paths"].items() for m in v}
+            if not api["enabled"]:
+                api["enabled"] = {f"{m} {p}": True for (p, m) in eps}
+
+            save_state()
+            rerun()
+
+        if api.get("spec"):
+            st.subheader("Включить/отключить эндпоинты")
+            with st.form("ep_form"):
+                cols = st.columns(2)
+                for i, (p, meths) in enumerate(api["spec"]["paths"].items()):
+                    for m in meths:
+                        key = f"{m} {p}"
+                        with cols[i % 2]:
+                            api["enabled"][key] = st.checkbox(
+                                key, value=api["enabled"].get(key, False)
+                            )
+                if st.form_submit_button(
+                    "💾 Сохранить", use_container_width=True
+                ):
+                    save_state()
+                    rerun()
 
 # ───────────────────────────────────────────────────── CONVERT ───
 elif page == "🔄 Convert":
