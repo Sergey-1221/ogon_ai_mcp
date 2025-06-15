@@ -1,0 +1,5 @@
+{
+  "name": "Petstore v2",
+  "url": "https://petstore.swagger.io/v2/swagger.json",
+  "port": 8000
+}

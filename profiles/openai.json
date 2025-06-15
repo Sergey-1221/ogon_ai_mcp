@@ -1,0 +1,5 @@
+{
+  "name": "OpenAI",
+  "url": "https://raw.githubusercontent.com/openai/openai-openapi/master/openapi.yaml",
+  "port": 8003
+}
