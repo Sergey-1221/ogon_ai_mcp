@@ -120,8 +120,11 @@ def filter_spec(spec: Dict, allowed: Set[Tuple[str, str]]) -> Dict:
     return s2
 
 
-def extract_ops(spec: Dict) -> Dict[str, Dict]:
+def extract_ops(spec: Dict | None) -> Dict[str, Dict]:
     """Извлечь описание и параметры для каждого operation."""
+    if not spec or not isinstance(spec, dict):
+        return {}
+
     ops = {}
     for path, meths in spec.get("paths", {}).items():
         for method, op in meths.items():
@@ -207,7 +210,7 @@ def load_state():
                 "thread": None,
                 "logs": [],
                 "operations": v.get(
-                    "operations", extract_ops(v.get("spec", {}))
+                    "operations", extract_ops(v.get("spec") or {})
                 ),
             }
             for k, v in cats.items()
@@ -234,7 +237,7 @@ def load_state():
                     "thread": None,
                     "logs": [],
                     "operations": prof.get(
-                        "operations", extract_ops(prof.get("spec", {}))
+                        "operations", extract_ops(prof.get("spec") or {})
                     ),
                 }
 
@@ -246,7 +249,7 @@ def save_state():
         v2.pop("thread", None)
         v2.pop("logs", None)
         if v2.get("spec") and not v2.get("operations"):
-            v2["operations"] = extract_ops(v2["spec"])
+            v2["operations"] = extract_ops(v2.get("spec") or {})
         cats[k] = v2
         os.makedirs(PROFILES_DIR, exist_ok=True)
         with open(
@@ -288,7 +291,7 @@ def start_mcp(api: dict):
     if not api.get("spec"):
         raise RuntimeError("Spec not loaded")
     if api.get("spec") and not api.get("operations"):
-        api["operations"] = extract_ops(api["spec"])
+        api["operations"] = extract_ops(api.get("spec") or {})
 
     allowed = {
         (p, m.lower())
@@ -474,7 +477,7 @@ elif page == "⚙️ API Setup":
                     api = blank_api()
                     api.update(prof)
                     if api.get("spec") and not api.get("operations"):
-                        api["operations"] = extract_ops(api["spec"])
+                        api["operations"] = extract_ops(api.get("spec") or {})
                     st.success("Файл профиля загружен")
             except Exception as e:
                 st.error(f"Ошибка чтения файла: {e}")
@@ -541,7 +544,7 @@ elif page == "⚙️ API Setup":
 
             gpt_describe(spec, OPENAI_ENV)
             api["spec"] = spec
-            api["operations"] = extract_ops(spec)
+            api["operations"] = extract_ops(spec or {})
             eps = {(p, m.lower()) for p, v in spec["paths"].items() for m in v}
             if not api["enabled"]:
                 api["enabled"] = {f"{m} {p}": True for (p, m) in eps}
