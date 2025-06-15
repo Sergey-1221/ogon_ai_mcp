@@ -171,7 +171,8 @@ def load_state():
         state["projects"] = data.get("projects", {})
         cats = data.get("api_catalog", {})
         state["api_catalog"] = {
-            k: {**v, "thread": None, "logs": []} for k, v in cats.items()
+            k: {**blank_api(k), **v, "thread": None, "logs": []}
+            for k, v in cats.items()
         }
     else:
         state["projects"] = {}
@@ -190,6 +191,7 @@ def load_state():
                 prof = yaml.safe_load(txt)
             if isinstance(prof, dict) and prof.get("name"):
                 state["api_catalog"][prof["name"]] = {
+                    **blank_api(prof["name"]),
                     **prof,
                     "thread": None,
                     "logs": [],
