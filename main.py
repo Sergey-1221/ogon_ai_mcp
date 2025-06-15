@@ -25,8 +25,9 @@ REST → MCP DASHBOARD  •  v2025-06
 4. ⚙️ API SETUP
    ─────────────
    • Управление глобальным каталогом API-профилей (URL, порт, auth-
-     заголовки или query-ключ, имя). Профиль хранит также spec,
-    enabled-map, тред сервера и логи.
+     заголовки или query-ключ, имя). Профиль хранит полную спецификацию,
+     список операций с описаниями и параметрами, enabled-map, тред сервера
+     и логи.
    • Несколько примеров профилей доступны через «Добавить из каталога».
    • Папка `profiles/` автоматически подгружается при старте,
      можно импортировать профиль из файла.
@@ -119,6 +120,34 @@ def filter_spec(spec: Dict, allowed: Set[Tuple[str, str]]) -> Dict:
     return s2
 
 
+def extract_ops(spec: Dict) -> Dict[str, Dict]:
+    """Извлечь описание и параметры для каждого operation."""
+    ops = {}
+    for path, meths in spec.get("paths", {}).items():
+        for method, op in meths.items():
+            key = f"{method.lower()} {path}"
+            params = []
+            for p in op.get("parameters", []):
+                params.append(
+                    {
+                        "name": p.get("name", ""),
+                        "in": p.get("in", ""),
+                        "required": p.get("required", False),
+                        "type": (
+                            p.get("schema", {}).get("type")
+                            if isinstance(p.get("schema"), dict)
+                            else None
+                        ),
+                        "description": p.get("description", ""),
+                    }
+                )
+            ops[key] = {
+                "description": op.get("description", ""),
+                "params": params,
+            }
+    return ops
+
+
 def make_http_client(base: str, headers: Dict, qparams: Dict, logger):
     """httpx.AsyncClient с хуком логирования."""
 
@@ -141,7 +170,7 @@ def log_line(api: dict, msg: str):
 
 
 def blank_api(name: str = "") -> Dict:
-    """Вернуть шаблон пустого API-профиля."""
+    """Вернуть шаблон пустого API-профиля со спецификацией и операциями."""
     return {
         "name": name,
         "url": "",
@@ -151,6 +180,7 @@ def blank_api(name: str = "") -> Dict:
         "query_name": "",
         "query_val": "",
         "spec": None,
+        "operations": {},
         "enabled": {},
         "thread": None,
         "logs": [],
@@ -171,7 +201,15 @@ def load_state():
         state["projects"] = data.get("projects", {})
         cats = data.get("api_catalog", {})
         state["api_catalog"] = {
-            k: {**blank_api(k), **v, "thread": None, "logs": []}
+            k: {
+                **blank_api(k),
+                **v,
+                "thread": None,
+                "logs": [],
+                "operations": v.get(
+                    "operations", extract_ops(v.get("spec", {}))
+                ),
+            }
             for k, v in cats.items()
         }
     else:
@@ -195,6 +233,9 @@ def load_state():
                     **prof,
                     "thread": None,
                     "logs": [],
+                    "operations": prof.get(
+                        "operations", extract_ops(prof.get("spec", {}))
+                    ),
                 }
 
 
@@ -204,6 +245,8 @@ def save_state():
         v2 = {**v}
         v2.pop("thread", None)
         v2.pop("logs", None)
+        if v2.get("spec") and not v2.get("operations"):
+            v2["operations"] = extract_ops(v2["spec"])
         cats[k] = v2
         os.makedirs(PROFILES_DIR, exist_ok=True)
         with open(
@@ -244,6 +287,8 @@ def start_mcp(api: dict):
     """Запустить FastMCP для указанного профиля."""
     if not api.get("spec"):
         raise RuntimeError("Spec not loaded")
+    if api.get("spec") and not api.get("operations"):
+        api["operations"] = extract_ops(api["spec"])
 
     allowed = {
         (p, m.lower())
@@ -428,6 +473,8 @@ elif page == "⚙️ API Setup":
                 if isinstance(prof, dict):
                     api = blank_api()
                     api.update(prof)
+                    if api.get("spec") and not api.get("operations"):
+                        api["operations"] = extract_ops(api["spec"])
                     st.success("Файл профиля загружен")
             except Exception as e:
                 st.error(f"Ошибка чтения файла: {e}")
@@ -494,6 +541,7 @@ elif page == "⚙️ API Setup":
 
             gpt_describe(spec, OPENAI_ENV)
             api["spec"] = spec
+            api["operations"] = extract_ops(spec)
             eps = {(p, m.lower()) for p, v in spec["paths"].items() for m in v}
             if not api["enabled"]:
                 api["enabled"] = {f"{m} {p}": True for (p, m) in eps}
@@ -503,15 +551,28 @@ elif page == "⚙️ API Setup":
 
         if api.get("spec"):
             st.subheader("Включить/отключить эндпоинты")
+            ops = api.get("operations", {})
             with st.form("ep_form"):
                 cols = st.columns(2)
                 for i, (p, meths) in enumerate(api["spec"]["paths"].items()):
-                    for m in meths:
+                    for m, op in meths.items():
                         key = f"{m} {p}"
+                        info = ops.get(key, {})
+                        label = key
+                        if info.get("description"):
+                            label += f" — {info['description']}"
                         with cols[i % 2]:
                             api["enabled"][key] = st.checkbox(
-                                key, value=api["enabled"].get(key, False)
+                                label, value=api["enabled"].get(key, False)
                             )
+                            if info.get("params"):
+                                st.caption(
+                                    ", ".join(
+                                        p["name"]
+                                        for p in info["params"]
+                                        if p["name"]
+                                    )
+                                )
                 if st.form_submit_button(
                     "💾 Сохранить", use_container_width=True
                 ):
