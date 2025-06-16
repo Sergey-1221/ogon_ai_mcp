@@ -100,7 +100,7 @@ def gpt_describe(spec: Dict, api_key: str):
                 resp = client.chat.completions.create(
                     model="o4-mini",
                     messages=[{"role": "user", "content": prompt}],
-                    max_tokens=40,
+                    max_completion_tokens=40,
                     temperature=0,
                 )
                 op["description"] = resp.choices[0].message.content.strip()
@@ -125,7 +125,7 @@ def gpt_mcp_names(spec: Dict, api_key: str) -> Dict[str, str]:
                 resp = client.chat.completions.create(
                     model="o4-mini",
                     messages=[{"role": "user", "content": prompt}],
-                    max_tokens=6,
+                    max_completion_tokens=6,
                     temperature=0,
                 )
                 name = resp.choices[0].message.content.strip().split()[0]
