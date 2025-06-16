@@ -98,7 +98,7 @@ def gpt_describe(spec: Dict, api_key: str):
             )
             try:
                 resp = openai.ChatCompletion.create(
-                    model="gpt-3.5-turbo",
+                    model="o4-mini",
                     messages=[{"role": "user", "content": prompt}],
                     max_tokens=40,
                     temperature=0,
@@ -123,7 +123,7 @@ def gpt_mcp_names(spec: Dict, api_key: str) -> Dict[str, str]:
             )
             try:
                 resp = openai.ChatCompletion.create(
-                    model="gpt-3.5-turbo",
+                    model="o4-mini",
                     messages=[{"role": "user", "content": prompt}],
                     max_tokens=6,
                     temperature=0,
@@ -744,7 +744,7 @@ elif page == "💬 Chat":
 
         while True:
             resp = openai.ChatCompletion.create(
-                model="gpt-3.5-turbo-1106", messages=conv, functions=functions
+                model="o4-mini", messages=conv, functions=functions
             )
             msg = resp.choices[0].message
 
