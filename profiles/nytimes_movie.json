@@ -1,0 +1,5 @@
+{
+  "name": "NYTimes Movie Reviews",
+  "url": "https://api.apis.guru/v2/specs/nytimes.com/movie_reviews/2.0.0/openapi.json",
+  "port": 8009
+}
