@@ -89,7 +89,7 @@ def gpt_describe(spec: Dict, api_key: str):
     """Добавить/обновить description для каждого operation."""
     if not api_key:
         return
-    openai.api_key = api_key
+    client = openai.OpenAI(api_key=api_key)
     for path, meths in spec["paths"].items():
         for method, op in meths.items():
             prompt = (
@@ -97,15 +97,40 @@ def gpt_describe(spec: Dict, api_key: str):
                 f"{method.upper()} {path}"
             )
             try:
-                resp = openai.ChatCompletion.create(
-                    model="gpt-3.5-turbo",
+                resp = client.chat.completions.create(
+                    model="o4-mini",
                     messages=[{"role": "user", "content": prompt}],
-                    max_tokens=40,
-                    temperature=0,
+                    max_completion_tokens=40
                 )
                 op["description"] = resp.choices[0].message.content.strip()
             except Exception as e:
                 print("GPT error:", e)
+
+
+def gpt_mcp_names(spec: Dict, api_key: str) -> Dict[str, str]:
+    """Return mapping from operationId to short MCP component names."""
+    if not api_key:
+        return {}
+    client = openai.OpenAI(api_key=api_key)
+    names = {}
+    for path, meths in spec.get("paths", {}).items():
+        for method, op in meths.items():
+            op_id = op.get("operationId") or f"{method}_{path.strip('/').replace('/', '_')}"
+            prompt = (
+                "Придумай короткое имя в snake_case (до 3 слов) для операции "
+                f"{method.upper()} {path}"
+            )
+            try:
+                resp = client.chat.completions.create(
+                    model="o4-mini",
+                    messages=[{"role": "user", "content": prompt}],
+                    max_completion_tokens=6,
+                )
+                name = resp.choices[0].message.content.strip().split()[0]
+                names[op_id] = name
+            except Exception as e:
+                print("GPT name error:", e)
+    return names
 
 
 def filter_spec(spec: Dict, allowed: Set[Tuple[str, str]]) -> Dict:
@@ -129,6 +154,7 @@ def extract_ops(spec: Dict | None) -> Dict[str, Dict]:
     for path, meths in spec.get("paths", {}).items():
         for method, op in meths.items():
             key = f"{method.lower()} {path}"
+            op_id = op.get("operationId") or f"{method}_{path.strip('/').replace('/', '_')}"
             params = []
             for p in op.get("parameters", []):
                 params.append(
@@ -147,8 +173,30 @@ def extract_ops(spec: Dict | None) -> Dict[str, Dict]:
             ops[key] = {
                 "description": op.get("description", ""),
                 "params": params,
+                "operationId": op_id,
             }
     return ops
+
+
+def ensure_spec(api: dict) -> bool:
+    """Download and process spec if not already loaded."""
+    if api.get("spec") or not api.get("url"):
+        return False
+    try:
+        spec = load_openapi(api["url"])
+    except Exception as e:
+        api.setdefault("logs", []).append(f"Spec download error: {e}")
+        return False
+
+    gpt_describe(spec, OPENAI_ENV)
+    api["mcp_names"] = gpt_mcp_names(spec, OPENAI_ENV)
+    api["spec"] = spec
+    api["operations"] = extract_ops(spec or {})
+    eps = {(p, m.lower()) for p, v in spec.get("paths", {}).items() for m in v}
+    if not api.get("enabled"):
+        api["enabled"] = {f"{m} {p}": True for (p, m) in eps}
+    save_state()
+    return True
 
 
 def make_http_client(base: str, headers: Dict, qparams: Dict, logger):
@@ -190,6 +238,53 @@ def blank_api(name: str = "") -> Dict:
     }
 
 
+def build_mcp_from_openapi(
+    spec: Dict,
+    client: httpx.AsyncClient,
+    name: str,
+    host: str,
+    port: int,
+    mcp_names: Dict[str, str] | None = None,
+) -> FastMCP:
+    """Create FastMCP instance from an OpenAPI spec."""
+
+    server = FastMCP(name=name, host=host, port=port)
+
+    for path, meths in spec.get("paths", {}).items():
+        for method, op in meths.items():
+            if method.lower() not in ("get", "post"):
+                continue
+
+            op_id = op.get("operationId") or f"{method}_{path.strip('/').replace('/', '_')}"
+            tool_name = mcp_names.get(op_id, op_id) if mcp_names else op_id
+            description = op.get("description") or op.get("summary") or ""
+            params = op.get("parameters", [])
+
+            def make_tool(p=path, m=method, prm=params):
+                async def _tool(**kwargs):
+                    url = p
+                    for pa in prm:
+                        if pa.get("in") == "path" and pa.get("name") in kwargs:
+                            url = url.replace("{" + pa["name"] + "}", str(kwargs[pa["name"]]))
+                    q = {
+                        pa["name"]: kwargs[pa["name"]]
+                        for pa in prm
+                        if pa.get("in") == "query" and pa.get("name") in kwargs
+                    }
+                    body = kwargs.get("body")
+                    resp = await client.request(m.upper(), url, params=q, json=body)
+                    try:
+                        return resp.json()
+                    except Exception:
+                        return resp.text
+
+                return _tool
+
+            server.add_tool(make_tool(), name=tool_name, description=description)
+
+    return server
+
+
 # ──────────────────────────────────────────────────────────────────
 #  Persist projects and API catalog to disk
 # ──────────────────────────────────────────────────────────────────
@@ -201,7 +296,11 @@ def load_state():
     if os.path.exists(DATA_FILE):
         with open(DATA_FILE, "r", encoding="utf-8") as f:
             data = json.load(f)
-        state["projects"] = data.get("projects", {})
+        projects_raw = data.get("projects", {})
+        state["projects"] = {
+            k: {"name": v.get("name", k), "apis": v.get("apis", [])}
+            for k, v in projects_raw.items()
+        }
         cats = data.get("api_catalog", {})
         state["api_catalog"] = {
             k: {
@@ -256,38 +355,19 @@ def save_state():
             os.path.join(PROFILES_DIR, f"{k}.json"), "w", encoding="utf-8"
         ) as f:
             json.dump(v2, f, ensure_ascii=False, indent=2)
-    data = {"projects": state.get("projects", {}), "api_catalog": cats}
+    projs = {
+        k: {"name": v.get("name", k), "apis": v.get("apis", [])}
+        for k, v in state.get("projects", {}).items()
+    }
+    data = {"projects": projs, "api_catalog": cats}
     with open(DATA_FILE, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
 
 
-# Каталог заранее известных API-профилей
-PREDEFINED_APIS = {
-    "Petstore v2": {
-        "url": "https://petstore.swagger.io/v2/swagger.json",
-        "port": 8000,
-    },
-    "Petstore v3": {
-        "url": "https://petstore3.swagger.io/api/v3/openapi.json",
-        "port": 8001,
-    },
-    "GitHub": {
-        "url": "https://api.apis.guru/v2/specs/github.com/1.1.4/openapi.json",
-        "port": 8002,
-    },
-    "OpenAI": {
-        "url": "https://raw.githubusercontent.com/openai/openai-openapi/master/openapi.yaml",
-        "port": 8003,
-    },
-    "Stripe": {
-        "url": "https://api.apis.guru/v2/specs/stripe.com/2022-11-15/openapi.json",
-        "port": 8004,
-    },
-}
-
 
 def start_mcp(api: dict):
     """Запустить FastMCP для указанного профиля."""
+    ensure_spec(api)
     if not api.get("spec"):
         raise RuntimeError("Spec not loaded")
     if api.get("spec") and not api.get("operations"):
@@ -313,12 +393,13 @@ def start_mcp(api: dict):
         base, headers, qparams, lambda m: log_line(api, m)
     )
 
-    mcp = FastMCP.from_openapi(
+    mcp = build_mcp_from_openapi(
         spec_filtered,
         client,
         name=api["name"],
         host="0.0.0.0",
         port=api["port"],
+        mcp_names=api.get("mcp_names"),
     )
 
     def run_server():
@@ -387,18 +468,12 @@ if page == "🗂 Projects":
     creating_new = chosen == "< создать >"
 
     project = (
-        {"name": "", "openai": OPENAI_ENV, "apis": []}
+        {"name": "", "apis": []}
         if creating_new
         else state["projects"][chosen]
     )
     with st.form("proj_form"):
         project["name"] = st.text_input("Название проекта", project["name"])
-        project["openai"] = st.text_input(
-            "OpenAI API-ключ",
-            project["openai"],
-            type="password",
-            help="Пусто → берётся из .env",
-        )
         if st.form_submit_button(
             "💾 Сохранить проект", type="primary", use_container_width=True
         ):
@@ -459,9 +534,6 @@ elif page == "⚙️ API Setup":
     creating = choice == "< создать новый >"
 
     if creating:
-        template = st.selectbox(
-            "Шаблон", ["< нет >"] + list(PREDEFINED_APIS), key="new_tpl"
-        )
         api = state.get("new_api", blank_api())
         uploaded = st.file_uploader(
             "Импорт из файла", type=["json", "yaml", "yml"], key="prof_up"
@@ -481,13 +553,14 @@ elif page == "⚙️ API Setup":
                     st.success("Файл профиля загружен")
             except Exception as e:
                 st.error(f"Ошибка чтения файла: {e}")
-        if template != "< нет >":
-            tpl = PREDEFINED_APIS[template]
-            api = blank_api(template)
-            api.update({"url": tpl["url"], "port": tpl.get("port", 8000)})
     else:
         state["api_sel"] = choice
         api = state["api_catalog"][choice]
+        res = ensure_spec(api)
+        if res:
+            rerun()
+        elif not api.get("spec"):
+            st.error("Ошибка скачивания или парсинга")
 
     with st.form("api_form"):
         col1, col2 = st.columns(2)
@@ -531,51 +604,56 @@ elif page == "⚙️ API Setup":
         api = state["api_catalog"][state["api_sel"]]
         st.divider()
         if st.button(
-            "🔄 Скачать спецификацию",
+            "🔄 Обновить спецификацию",
             type="primary",
             use_container_width=True,
             key="dl_spec",
         ):
-            try:
-                spec = load_openapi(api["url"])
-            except Exception as e:
-                st.error(f"Ошибка скачивания или парсинга: {e}")
-                st.stop()
-
-            gpt_describe(spec, OPENAI_ENV)
-            api["spec"] = spec
-            api["operations"] = extract_ops(spec or {})
-            eps = {(p, m.lower()) for p, v in spec["paths"].items() for m in v}
-            if not api["enabled"]:
-                api["enabled"] = {f"{m} {p}": True for (p, m) in eps}
-
-            save_state()
-            rerun()
+            result = ensure_spec(api)
+            if result:
+                rerun()
+            elif not api.get("spec"):
+                st.error("Ошибка скачивания или парсинга")
 
         if api.get("spec"):
             st.subheader("Включить/отключить эндпоинты")
+            if st.button("🧠 Сгенерировать имена", key="gen_names"):
+                api["mcp_names"] = gpt_mcp_names(api["spec"], OPENAI_ENV)
+                save_state()
+                rerun()
             ops = api.get("operations", {})
             with st.form("ep_form"):
-                cols = st.columns(2)
-                for i, (p, meths) in enumerate(api["spec"]["paths"].items()):
-                    for m, op in meths.items():
-                        key = f"{m} {p}"
+                for path, meths in api["spec"]["paths"].items():
+                    for method, op in meths.items():
+                        if method.lower() not in ("get", "post"):
+                            continue
+                        key = f"{method} {path}"
                         info = ops.get(key, {})
-                        label = key
+                        label = f"{method.upper()} {path}"
+                        op_id = info.get("operationId") or op.get("operationId")
+                        tool_name = api.get("mcp_names", {}).get(op_id, "") if op_id else ""
+                        if tool_name:
+                            label += f" → {tool_name}"
                         if info.get("description"):
                             label += f" — {info['description']}"
-                        with cols[i % 2]:
+                        with st.expander(label, expanded=True):
                             api["enabled"][key] = st.checkbox(
-                                label, value=api["enabled"].get(key, False)
+                                "Включить",
+                                value=api["enabled"].get(key, False),
+                                key=f"en_{key}",
                             )
                             if info.get("params"):
-                                st.caption(
-                                    ", ".join(
-                                        p["name"]
-                                        for p in info["params"]
-                                        if p["name"]
-                                    )
-                                )
+                                for prm in info["params"]:
+                                    if not prm.get("name"):
+                                        continue
+                                    desc = f"**{prm['name']}**"
+                                    if prm.get("type"):
+                                        desc += f" `{prm['type']}`"
+                                    if prm.get("required"):
+                                        desc += " (required)"
+                                    if prm.get("description"):
+                                        desc += f": {prm['description']}"
+                                    st.markdown(f"- {desc}")
                 if st.form_submit_button(
                     "💾 Сохранить", use_container_width=True
                 ):
@@ -654,7 +732,7 @@ elif page == "💬 Chat":
             for t in tools
         ]
 
-        openai.api_key = state["projects"][pj_name]["openai"] or OPENAI_ENV
+        client = openai.OpenAI(api_key=OPENAI_ENV)
         conv = [
             {
                 "role": "system",
@@ -663,40 +741,61 @@ elif page == "💬 Chat":
         ] + [{"role": r, "content": m} for r, m in state["chat"]]
 
         while True:
-            resp = openai.ChatCompletion.create(
-                model="gpt-3.5-turbo-1106", messages=conv, functions=functions
+            resp = client.chat.completions.create(
+                model="o4-mini", messages=conv, functions=functions
             )
             msg = resp.choices[0].message
 
             # если GPT хочет вызвать функцию
-            if "function_call" in msg:
+            fc_calls = []
+            if getattr(msg, "tool_calls", None):
+                for tc in msg.tool_calls:
+                    fc_calls.append({
+                        "name": tc.function.name,
+                        "arguments": tc.function.arguments,
+                        "id": getattr(tc, "id", None),
+                    })
+                conv.append({
+                    "role": "assistant",
+                    "content": None,
+                    "tool_calls": [
+                        {
+                            "id": c["id"],
+                            "type": "function",
+                            "function": {"name": c["name"], "arguments": c["arguments"]},
+                        }
+                        for c in fc_calls
+                    ],
+                })
+            elif getattr(msg, "function_call", None):
                 fc = msg.function_call
-                args = json.loads(fc.arguments or "{}")
-                try:
-                    result = requests.post(
-                        f"http://localhost:{port}/tools/call",
-                        json={"name": fc.name, "arguments": args},
-                        timeout=30,
-                    ).json()
-                    tool_answer = result["content"][0]["text"]
-                except Exception as e:
-                    tool_answer = f"⚠️ MCP error: {e}"
+                fc_calls.append({"name": fc.name, "arguments": fc.arguments})
+                conv.append({
+                    "role": "assistant",
+                    "content": None,
+                    "function_call": {"name": fc.name, "arguments": fc.arguments},
+                })
 
-                conv.append(
-                    {
-                        "role": "assistant",
-                        "name": fc.name,
-                        "content": None,
-                        "function_call": fc,
-                    }
-                )
-                conv.append(
-                    {
-                        "role": "function",
-                        "name": fc.name,
-                        "content": tool_answer,
-                    }
-                )
+            if fc_calls:
+                for fc in fc_calls:
+                    args = json.loads(fc["arguments"] or "{}")
+                    try:
+                        result = requests.post(
+                            f"http://localhost:{port}/tools/call",
+                            json={"name": fc["name"], "arguments": args},
+                            timeout=30,
+                        ).json()
+                        tool_answer = result["content"][0]["text"]
+                    except Exception as e:
+                        tool_answer = f"⚠️ MCP error: {e}"
+
+                    conv.append(
+                        {
+                            "role": "function",
+                            "name": fc["name"],
+                            "content": tool_answer,
+                        }
+                    )
             else:
                 answer = msg.content
                 state["chat"].append(("assistant", answer))
