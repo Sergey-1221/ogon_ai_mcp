@@ -100,8 +100,7 @@ def gpt_describe(spec: Dict, api_key: str):
                 resp = client.chat.completions.create(
                     model="o4-mini",
                     messages=[{"role": "user", "content": prompt}],
-                    max_tokens=40,
-                    temperature=0,
+                    max_completion_tokens=40
                 )
                 op["description"] = resp.choices[0].message.content.strip()
             except Exception as e:
@@ -125,8 +124,7 @@ def gpt_mcp_names(spec: Dict, api_key: str) -> Dict[str, str]:
                 resp = client.chat.completions.create(
                     model="o4-mini",
                     messages=[{"role": "user", "content": prompt}],
-                    max_tokens=6,
-                    temperature=0,
+                    max_completion_tokens=6,
                 )
                 name = resp.choices[0].message.content.strip().split()[0]
                 names[op_id] = name
