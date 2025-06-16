@@ -151,6 +151,26 @@ def extract_ops(spec: Dict | None) -> Dict[str, Dict]:
     return ops
 
 
+def ensure_spec(api: dict) -> bool:
+    """Download and process spec if not already loaded."""
+    if api.get("spec") or not api.get("url"):
+        return False
+    try:
+        spec = load_openapi(api["url"])
+    except Exception as e:
+        api.setdefault("logs", []).append(f"Spec download error: {e}")
+        return False
+
+    gpt_describe(spec, OPENAI_ENV)
+    api["spec"] = spec
+    api["operations"] = extract_ops(spec or {})
+    eps = {(p, m.lower()) for p, v in spec.get("paths", {}).items() for m in v}
+    if not api.get("enabled"):
+        api["enabled"] = {f"{m} {p}": True for (p, m) in eps}
+    save_state()
+    return True
+
+
 def make_http_client(base: str, headers: Dict, qparams: Dict, logger):
     """httpx.AsyncClient с хуком логирования."""
 
@@ -288,6 +308,7 @@ PREDEFINED_APIS = {
 
 def start_mcp(api: dict):
     """Запустить FastMCP для указанного профиля."""
+    ensure_spec(api)
     if not api.get("spec"):
         raise RuntimeError("Spec not loaded")
     if api.get("spec") and not api.get("operations"):
@@ -488,6 +509,11 @@ elif page == "⚙️ API Setup":
     else:
         state["api_sel"] = choice
         api = state["api_catalog"][choice]
+        res = ensure_spec(api)
+        if res:
+            rerun()
+        elif not api.get("spec"):
+            st.error("Ошибка скачивания или парсинга")
 
     with st.form("api_form"):
         col1, col2 = st.columns(2)
@@ -531,51 +557,48 @@ elif page == "⚙️ API Setup":
         api = state["api_catalog"][state["api_sel"]]
         st.divider()
         if st.button(
-            "🔄 Скачать спецификацию",
+            "🔄 Обновить спецификацию",
             type="primary",
             use_container_width=True,
             key="dl_spec",
         ):
-            try:
-                spec = load_openapi(api["url"])
-            except Exception as e:
-                st.error(f"Ошибка скачивания или парсинга: {e}")
-                st.stop()
-
-            gpt_describe(spec, OPENAI_ENV)
-            api["spec"] = spec
-            api["operations"] = extract_ops(spec or {})
-            eps = {(p, m.lower()) for p, v in spec["paths"].items() for m in v}
-            if not api["enabled"]:
-                api["enabled"] = {f"{m} {p}": True for (p, m) in eps}
-
-            save_state()
-            rerun()
+            result = ensure_spec(api)
+            if result:
+                rerun()
+            elif not api.get("spec"):
+                st.error("Ошибка скачивания или парсинга")
 
         if api.get("spec"):
             st.subheader("Включить/отключить эндпоинты")
             ops = api.get("operations", {})
             with st.form("ep_form"):
-                cols = st.columns(2)
-                for i, (p, meths) in enumerate(api["spec"]["paths"].items()):
-                    for m, op in meths.items():
-                        key = f"{m} {p}"
+                for path, meths in api["spec"]["paths"].items():
+                    for method, op in meths.items():
+                        if method.lower() not in ("get", "post"):
+                            continue
+                        key = f"{method} {path}"
                         info = ops.get(key, {})
-                        label = key
+                        label = f"{method.upper()} {path}"
                         if info.get("description"):
                             label += f" — {info['description']}"
-                        with cols[i % 2]:
+                        with st.expander(label, expanded=True):
                             api["enabled"][key] = st.checkbox(
-                                label, value=api["enabled"].get(key, False)
+                                "Включить",
+                                value=api["enabled"].get(key, False),
+                                key=f"en_{key}",
                             )
                             if info.get("params"):
-                                st.caption(
-                                    ", ".join(
-                                        p["name"]
-                                        for p in info["params"]
-                                        if p["name"]
-                                    )
-                                )
+                                for prm in info["params"]:
+                                    if not prm.get("name"):
+                                        continue
+                                    desc = f"**{prm['name']}**"
+                                    if prm.get("type"):
+                                        desc += f" `{prm['type']}`"
+                                    if prm.get("required"):
+                                        desc += " (required)"
+                                    if prm.get("description"):
+                                        desc += f": {prm['description']}"
+                                    st.markdown(f"- {desc}")
                 if st.form_submit_button(
                     "💾 Сохранить", use_container_width=True
                 ):
