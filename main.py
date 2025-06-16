@@ -89,7 +89,7 @@ def gpt_describe(spec: Dict, api_key: str):
     """Добавить/обновить description для каждого operation."""
     if not api_key:
         return
-    openai.api_key = api_key
+    client = openai.OpenAI(api_key=api_key)
     for path, meths in spec["paths"].items():
         for method, op in meths.items():
             prompt = (
@@ -97,7 +97,7 @@ def gpt_describe(spec: Dict, api_key: str):
                 f"{method.upper()} {path}"
             )
             try:
-                resp = openai.ChatCompletion.create(
+                resp = client.chat.completions.create(
                     model="o4-mini",
                     messages=[{"role": "user", "content": prompt}],
                     max_tokens=40,
@@ -112,7 +112,7 @@ def gpt_mcp_names(spec: Dict, api_key: str) -> Dict[str, str]:
     """Return mapping from operationId to short MCP component names."""
     if not api_key:
         return {}
-    openai.api_key = api_key
+    client = openai.OpenAI(api_key=api_key)
     names = {}
     for path, meths in spec.get("paths", {}).items():
         for method, op in meths.items():
@@ -122,7 +122,7 @@ def gpt_mcp_names(spec: Dict, api_key: str) -> Dict[str, str]:
                 f"{method.upper()} {path}"
             )
             try:
-                resp = openai.ChatCompletion.create(
+                resp = client.chat.completions.create(
                     model="o4-mini",
                     messages=[{"role": "user", "content": prompt}],
                     max_tokens=6,
@@ -734,7 +734,7 @@ elif page == "💬 Chat":
             for t in tools
         ]
 
-        openai.api_key = OPENAI_ENV
+        client = openai.OpenAI(api_key=OPENAI_ENV)
         conv = [
             {
                 "role": "system",
@@ -743,40 +743,61 @@ elif page == "💬 Chat":
         ] + [{"role": r, "content": m} for r, m in state["chat"]]
 
         while True:
-            resp = openai.ChatCompletion.create(
+            resp = client.chat.completions.create(
                 model="o4-mini", messages=conv, functions=functions
             )
             msg = resp.choices[0].message
 
             # если GPT хочет вызвать функцию
-            if "function_call" in msg:
+            fc_calls = []
+            if getattr(msg, "tool_calls", None):
+                for tc in msg.tool_calls:
+                    fc_calls.append({
+                        "name": tc.function.name,
+                        "arguments": tc.function.arguments,
+                        "id": getattr(tc, "id", None),
+                    })
+                conv.append({
+                    "role": "assistant",
+                    "content": None,
+                    "tool_calls": [
+                        {
+                            "id": c["id"],
+                            "type": "function",
+                            "function": {"name": c["name"], "arguments": c["arguments"]},
+                        }
+                        for c in fc_calls
+                    ],
+                })
+            elif getattr(msg, "function_call", None):
                 fc = msg.function_call
-                args = json.loads(fc.arguments or "{}")
-                try:
-                    result = requests.post(
-                        f"http://localhost:{port}/tools/call",
-                        json={"name": fc.name, "arguments": args},
-                        timeout=30,
-                    ).json()
-                    tool_answer = result["content"][0]["text"]
-                except Exception as e:
-                    tool_answer = f"⚠️ MCP error: {e}"
+                fc_calls.append({"name": fc.name, "arguments": fc.arguments})
+                conv.append({
+                    "role": "assistant",
+                    "content": None,
+                    "function_call": {"name": fc.name, "arguments": fc.arguments},
+                })
 
-                conv.append(
-                    {
-                        "role": "assistant",
-                        "name": fc.name,
-                        "content": None,
-                        "function_call": fc,
-                    }
-                )
-                conv.append(
-                    {
-                        "role": "function",
-                        "name": fc.name,
-                        "content": tool_answer,
-                    }
-                )
+            if fc_calls:
+                for fc in fc_calls:
+                    args = json.loads(fc["arguments"] or "{}")
+                    try:
+                        result = requests.post(
+                            f"http://localhost:{port}/tools/call",
+                            json={"name": fc["name"], "arguments": args},
+                            timeout=30,
+                        ).json()
+                        tool_answer = result["content"][0]["text"]
+                    except Exception as e:
+                        tool_answer = f"⚠️ MCP error: {e}"
+
+                    conv.append(
+                        {
+                            "role": "function",
+                            "name": fc["name"],
+                            "content": tool_answer,
+                        }
+                    )
             else:
                 answer = msg.content
                 state["chat"].append(("assistant", answer))
