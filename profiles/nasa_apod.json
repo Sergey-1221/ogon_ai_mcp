@@ -1,0 +1,5 @@
+{
+  "name": "NASA APOD",
+  "url": "https://api.apis.guru/v2/specs/nasa.gov/apod/1.0.0/openapi.json",
+  "port": 8005
+}

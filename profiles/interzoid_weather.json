@@ -1,0 +1,5 @@
+{
+  "name": "Interzoid Weather",
+  "url": "https://api.apis.guru/v2/specs/interzoid.com/getweathercity/1.0.0/openapi.json",
+  "port": 8006
+}
