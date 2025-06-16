@@ -40,7 +40,7 @@ REST → MCP DASHBOARD  •  v2025-06
     requests>=2.31
     httpx>=0.27
     pyyaml>=6.0
-    pydantic>=2.6
+    pydantic>=2.7
     openai>=1.25
     mcp>=0.3               # FastMCP SDK
     python-dotenv>=1.0
@@ -100,7 +100,7 @@ def gpt_describe(spec: Dict, api_key: str):
                 resp = client.chat.completions.create(
                     model="o4-mini",
                     messages=[{"role": "user", "content": prompt}],
-                    max_completion_tokens=40
+                    max_tokens=40,
                 )
                 op["description"] = resp.choices[0].message.content.strip()
             except Exception as e:
@@ -124,7 +124,7 @@ def gpt_mcp_names(spec: Dict, api_key: str) -> Dict[str, str]:
                 resp = client.chat.completions.create(
                     model="o4-mini",
                     messages=[{"role": "user", "content": prompt}],
-                    max_completion_tokens=6,
+                    max_tokens=6,
                 )
                 name = resp.choices[0].message.content.strip().split()[0]
                 names[op_id] = name
@@ -723,11 +723,14 @@ elif page == "💬 Chat":
             st.error(f"/tools/list error: {e}")
             st.stop()
 
-        functions = [
+        tools_payload = [
             {
-                "name": t["name"],
-                "description": t["description"],
-                "parameters": t["input_schema"],
+                "type": "function",
+                "function": {
+                    "name": t["name"],
+                    "description": t["description"],
+                    "parameters": t["input_schema"],
+                },
             }
             for t in tools
         ]
@@ -742,7 +745,9 @@ elif page == "💬 Chat":
 
         while True:
             resp = client.chat.completions.create(
-                model="o4-mini", messages=conv, functions=functions
+                model="o4-mini",
+                messages=conv,
+                tools=tools_payload,
             )
             msg = resp.choices[0].message
 
