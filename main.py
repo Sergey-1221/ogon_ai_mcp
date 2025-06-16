@@ -108,6 +108,33 @@ def gpt_describe(spec: Dict, api_key: str):
                 print("GPT error:", e)
 
 
+def gpt_mcp_names(spec: Dict, api_key: str) -> Dict[str, str]:
+    """Return mapping from operationId to short MCP component names."""
+    if not api_key:
+        return {}
+    openai.api_key = api_key
+    names = {}
+    for path, meths in spec.get("paths", {}).items():
+        for method, op in meths.items():
+            op_id = op.get("operationId") or f"{method}_{path.strip('/').replace('/', '_')}"
+            prompt = (
+                "Придумай короткое имя в snake_case (до 3 слов) для операции "
+                f"{method.upper()} {path}"
+            )
+            try:
+                resp = openai.ChatCompletion.create(
+                    model="gpt-3.5-turbo",
+                    messages=[{"role": "user", "content": prompt}],
+                    max_tokens=6,
+                    temperature=0,
+                )
+                name = resp.choices[0].message.content.strip().split()[0]
+                names[op_id] = name
+            except Exception as e:
+                print("GPT name error:", e)
+    return names
+
+
 def filter_spec(spec: Dict, allowed: Set[Tuple[str, str]]) -> Dict:
     """Вернуть копию spec, содержащую только allowed (path, method)."""
     s2 = copy.deepcopy(spec)
@@ -129,6 +156,7 @@ def extract_ops(spec: Dict | None) -> Dict[str, Dict]:
     for path, meths in spec.get("paths", {}).items():
         for method, op in meths.items():
             key = f"{method.lower()} {path}"
+            op_id = op.get("operationId") or f"{method}_{path.strip('/').replace('/', '_')}"
             params = []
             for p in op.get("parameters", []):
                 params.append(
@@ -147,6 +175,7 @@ def extract_ops(spec: Dict | None) -> Dict[str, Dict]:
             ops[key] = {
                 "description": op.get("description", ""),
                 "params": params,
+                "operationId": op_id,
             }
     return ops
 
@@ -162,6 +191,7 @@ def ensure_spec(api: dict) -> bool:
         return False
 
     gpt_describe(spec, OPENAI_ENV)
+    api["mcp_names"] = gpt_mcp_names(spec, OPENAI_ENV)
     api["spec"] = spec
     api["operations"] = extract_ops(spec or {})
     eps = {(p, m.lower()) for p, v in spec.get("paths", {}).items() for m in v}
@@ -316,6 +346,7 @@ def start_mcp(api: dict):
         name=api["name"],
         host="0.0.0.0",
         port=api["port"],
+        mcp_names=api.get("mcp_names"),
     )
 
     def run_server():
@@ -539,6 +570,10 @@ elif page == "⚙️ API Setup":
 
         if api.get("spec"):
             st.subheader("Включить/отключить эндпоинты")
+            if st.button("🧠 Сгенерировать имена", key="gen_names"):
+                api["mcp_names"] = gpt_mcp_names(api["spec"], OPENAI_ENV)
+                save_state()
+                rerun()
             ops = api.get("operations", {})
             with st.form("ep_form"):
                 for path, meths in api["spec"]["paths"].items():
@@ -548,6 +583,10 @@ elif page == "⚙️ API Setup":
                         key = f"{method} {path}"
                         info = ops.get(key, {})
                         label = f"{method.upper()} {path}"
+                        op_id = info.get("operationId") or op.get("operationId")
+                        tool_name = api.get("mcp_names", {}).get(op_id, "") if op_id else ""
+                        if tool_name:
+                            label += f" → {tool_name}"
                         if info.get("description"):
                             label += f" — {info['description']}"
                         with st.expander(label, expanded=True):
