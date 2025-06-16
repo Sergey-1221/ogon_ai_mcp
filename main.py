@@ -281,30 +281,6 @@ def save_state():
         json.dump(data, f, ensure_ascii=False, indent=2)
 
 
-# Каталог заранее известных API-профилей
-PREDEFINED_APIS = {
-    "Petstore v2": {
-        "url": "https://petstore.swagger.io/v2/swagger.json",
-        "port": 8000,
-    },
-    "Petstore v3": {
-        "url": "https://petstore3.swagger.io/api/v3/openapi.json",
-        "port": 8001,
-    },
-    "GitHub": {
-        "url": "https://api.apis.guru/v2/specs/github.com/1.1.4/openapi.json",
-        "port": 8002,
-    },
-    "OpenAI": {
-        "url": "https://raw.githubusercontent.com/openai/openai-openapi/master/openapi.yaml",
-        "port": 8003,
-    },
-    "Stripe": {
-        "url": "https://api.apis.guru/v2/specs/stripe.com/2022-11-15/openapi.json",
-        "port": 8004,
-    },
-}
-
 
 def start_mcp(api: dict):
     """Запустить FastMCP для указанного профиля."""
@@ -480,9 +456,6 @@ elif page == "⚙️ API Setup":
     creating = choice == "< создать новый >"
 
     if creating:
-        template = st.selectbox(
-            "Шаблон", ["< нет >"] + list(PREDEFINED_APIS), key="new_tpl"
-        )
         api = state.get("new_api", blank_api())
         uploaded = st.file_uploader(
             "Импорт из файла", type=["json", "yaml", "yml"], key="prof_up"
@@ -502,10 +475,6 @@ elif page == "⚙️ API Setup":
                     st.success("Файл профиля загружен")
             except Exception as e:
                 st.error(f"Ошибка чтения файла: {e}")
-        if template != "< нет >":
-            tpl = PREDEFINED_APIS[template]
-            api = blank_api(template)
-            api.update({"url": tpl["url"], "port": tpl.get("port", 8000)})
     else:
         state["api_sel"] = choice
         api = state["api_catalog"][choice]
