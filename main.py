@@ -298,7 +298,11 @@ def load_state():
     if os.path.exists(DATA_FILE):
         with open(DATA_FILE, "r", encoding="utf-8") as f:
             data = json.load(f)
-        state["projects"] = data.get("projects", {})
+        projects_raw = data.get("projects", {})
+        state["projects"] = {
+            k: {"name": v.get("name", k), "apis": v.get("apis", [])}
+            for k, v in projects_raw.items()
+        }
         cats = data.get("api_catalog", {})
         state["api_catalog"] = {
             k: {
@@ -353,7 +357,11 @@ def save_state():
             os.path.join(PROFILES_DIR, f"{k}.json"), "w", encoding="utf-8"
         ) as f:
             json.dump(v2, f, ensure_ascii=False, indent=2)
-    data = {"projects": state.get("projects", {}), "api_catalog": cats}
+    projs = {
+        k: {"name": v.get("name", k), "apis": v.get("apis", [])}
+        for k, v in state.get("projects", {}).items()
+    }
+    data = {"projects": projs, "api_catalog": cats}
     with open(DATA_FILE, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
 
@@ -462,18 +470,12 @@ if page == "🗂 Projects":
     creating_new = chosen == "< создать >"
 
     project = (
-        {"name": "", "openai": OPENAI_ENV, "apis": []}
+        {"name": "", "apis": []}
         if creating_new
         else state["projects"][chosen]
     )
     with st.form("proj_form"):
         project["name"] = st.text_input("Название проекта", project["name"])
-        project["openai"] = st.text_input(
-            "OpenAI API-ключ",
-            project["openai"],
-            type="password",
-            help="Пусто → берётся из .env",
-        )
         if st.form_submit_button(
             "💾 Сохранить проект", type="primary", use_container_width=True
         ):
@@ -732,7 +734,7 @@ elif page == "💬 Chat":
             for t in tools
         ]
 
-        openai.api_key = state["projects"][pj_name]["openai"] or OPENAI_ENV
+        openai.api_key = OPENAI_ENV
         conv = [
             {
                 "role": "system",
