@@ -240,6 +240,53 @@ def blank_api(name: str = "") -> Dict:
     }
 
 
+def build_mcp_from_openapi(
+    spec: Dict,
+    client: httpx.AsyncClient,
+    name: str,
+    host: str,
+    port: int,
+    mcp_names: Dict[str, str] | None = None,
+) -> FastMCP:
+    """Create FastMCP instance from an OpenAPI spec."""
+
+    server = FastMCP(name=name, host=host, port=port)
+
+    for path, meths in spec.get("paths", {}).items():
+        for method, op in meths.items():
+            if method.lower() not in ("get", "post"):
+                continue
+
+            op_id = op.get("operationId") or f"{method}_{path.strip('/').replace('/', '_')}"
+            tool_name = mcp_names.get(op_id, op_id) if mcp_names else op_id
+            description = op.get("description") or op.get("summary") or ""
+            params = op.get("parameters", [])
+
+            def make_tool(p=path, m=method, prm=params):
+                async def _tool(**kwargs):
+                    url = p
+                    for pa in prm:
+                        if pa.get("in") == "path" and pa.get("name") in kwargs:
+                            url = url.replace("{" + pa["name"] + "}", str(kwargs[pa["name"]]))
+                    q = {
+                        pa["name"]: kwargs[pa["name"]]
+                        for pa in prm
+                        if pa.get("in") == "query" and pa.get("name") in kwargs
+                    }
+                    body = kwargs.get("body")
+                    resp = await client.request(m.upper(), url, params=q, json=body)
+                    try:
+                        return resp.json()
+                    except Exception:
+                        return resp.text
+
+                return _tool
+
+            server.add_tool(make_tool(), name=tool_name, description=description)
+
+    return server
+
+
 # ──────────────────────────────────────────────────────────────────
 #  Persist projects and API catalog to disk
 # ──────────────────────────────────────────────────────────────────
@@ -340,7 +387,7 @@ def start_mcp(api: dict):
         base, headers, qparams, lambda m: log_line(api, m)
     )
 
-    mcp = FastMCP.from_openapi(
+    mcp = build_mcp_from_openapi(
         spec_filtered,
         client,
         name=api["name"],
